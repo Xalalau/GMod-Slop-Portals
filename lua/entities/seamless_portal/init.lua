@@ -21,7 +21,7 @@ function ENT:PostEntityPaste(_, _, created)
 	local portal_exit = created[dupelink.exit_id]
 
 	if IsValid(portal_exit) then
-		self:LinkPortal(portal_exit)
+		if dupelink.directed then self:SetDirectedExitPortal(portal_exit) else self:LinkPortal(portal_exit) end
 	end
 
 	if dupelink.exit_remove then
@@ -29,36 +29,66 @@ function ENT:PostEntityPaste(_, _, created)
 	end
 end
 
-function ENT:LinkPortal(exit_portal)
-	if !IsValid(exit_portal) then return end -- not sure I like this, ideally should throw an error
 
-	self:SetExitPortal(exit_portal)
-	set_dupe_link(self:GetCreator(), self, {exit_id = exit_portal:EntIndex()})
-
-	exit_portal:SetExitPortal(self)
-	set_dupe_link(exit_portal:GetCreator(), exit_portal, {exit_id = self:EntIndex()})
+function ENT:DiscardTraversalState()
+    local cutout = self.SEAMLESS_PORTALS_CUTOUT
+    self.SEAMLESS_PORTALS_CUTOUT = nil
+    -- Restore admitted props now, not in the deferred OnRemove callback.
+    if IsValid(cutout) and cutout.Deactivate then cutout:Deactivate() end
+    SafeRemoveEntity(cutout)
 end
 
 function ENT:UnlinkPortal()
-	local exit_portal = self:GetExitPortal()
-	self:SetExitPortal(nil)
-	set_dupe_link(self:GetCreator(), self, {exit_id = -1})
+    local exit = self:GetExitPortal()
+    self:DiscardTraversalState()
+    self:SetExitPortal(NULL)
+    set_dupe_link(self:GetCreator(), self, {exit_id = -1, directed = false})
+    if SeamlessPortals.IsPortal(exit) and exit ~= self and exit:GetExitPortal() == self then
+        exit:DiscardTraversalState()
+        exit:SetExitPortal(NULL)
+        set_dupe_link(exit:GetCreator(), exit, {exit_id = -1, directed = false})
+    end
+    return true
+end
 
-	if !IsValid(exit_portal) then return end
-
-	exit_portal:SetExitPortal(nil)
-	set_dupe_link(exit_portal:GetCreator(), exit_portal, {exit_id = -1})
+function ENT:LinkPortal(exit)
+    if not SeamlessPortals.IsUsableLink(self, exit) then return false end
+    if self:GetExitPortal() == exit and exit:GetExitPortal() == self then return true end
+    self:UnlinkPortal()
+    if exit ~= self then exit:UnlinkPortal() end
+    self:SetExitPortal(exit)
+    set_dupe_link(self:GetCreator(), self, {exit_id = exit:EntIndex(), directed = false})
+    if exit ~= self then
+        exit:SetExitPortal(self)
+        set_dupe_link(exit:GetCreator(), exit, {exit_id = self:EntIndex(), directed = false})
+    end
+    return true
 end
 
 function ENT:SetRemoveExit(bool)
 	bool = bool and true or false
 
-	self.SEAMLESS_PORTALS_REMOVE_EXIT = bool
+	self:SetRemoveExitInternal(bool)
 	set_dupe_link(self:GetCreator(), self, {exit_remove = bool})
 end
 
-function ENT:GetRemoveExit(bool)
-	return self.SEAMLESS_PORTALS_REMOVE_EXIT
+
+
+-- Hammer links intentionally remain directed; do not silently force reciprocity.
+function ENT:SetDirectedExitPortal(exit)
+    if not SeamlessPortals.IsUsableLink(self, exit) then return false end
+    self:UnlinkPortal()
+    self:SetExitPortal(exit)
+    set_dupe_link(self:GetCreator(), self, {exit_id = exit:EntIndex(), directed = true})
+    return true
+end
+function ENT:LinkNamedPortal(name)
+    local targets = ents.FindByName(name)
+    if #targets ~= 1 or not SeamlessPortals.IsPortal(targets[1]) then
+        ErrorNoHalt("[Seamless Portals] Link target must uniquely name a portal: " .. tostring(name) .. "\n")
+        return false
+    end
+    return self:SetDirectedExitPortal(targets[1])
 end
 
 local outputs = {
@@ -69,8 +99,17 @@ local outputs = {
 function ENT:KeyValue(key, value)
 	self.SEAMLESS_PORTALS_MAP_FORMAT = self.SEAMLESS_PORTALS_MAP_FORMAT or 0
 
-	if key == "link" then
-		timer.Simple(0, function() self:SetExitPortal(ents.FindByName(value)[1]) end)
+	local feature_keys = {disablePropTeleport = {"props", true}, disablePlayerTeleport = {"players", true},
+        disableSoundTransfer = {"sound", true}, disableDamageTransfer = {"damage", true}, enableFunneling = {"funnel", false}}
+    local feature = feature_keys[key]
+    if feature then
+        local enabled = value == "1" or value == "true"
+        if feature[2] then enabled = not enabled end
+        SeamlessPortals.SetFeature(self, feature[1], enabled)
+    elseif key == "link" then
+		timer.Simple(0, function()
+            if IsValid(self) then self:LinkNamedPortal(value) end
+        end)
 	elseif key == "backface" then
 		self:SetDisableBackface(value == "1")
 	elseif key == "size" then
@@ -86,8 +125,14 @@ function ENT:KeyValue(key, value)
 end
 
 function ENT:AcceptInput(input, activator, caller, data)
-	if input == "Link" then
-		self:SetExitPortal(ents.FindByName(data)[1])
+	local inputs = {EnablePropTeleport = {"props", true}, DisablePropTeleport = {"props", false},
+        EnableSoundTransfer = {"sound", true}, DisableSoundTransfer = {"sound", false},
+        EnableDamageTransfer = {"damage", true}, DisableDamageTransfer = {"damage", false},
+        EnableFunneling = {"funnel", true}, DisableFunneling = {"funnel", false},
+        EnablePlayerTeleport = {"players", true}, DisablePlayerTeleport = {"players", false}}
+    if inputs[input] then return SeamlessPortals.SetFeature(self, unpack(inputs[input])) end
+    if input == "Link" then
+		self:LinkNamedPortal(data)
 	end
 end
 
@@ -95,6 +140,8 @@ function ENT:Initialize()
 	self:SetModel("models/hunter/plates/plate2x2.mdl")
 	self:SetCollisionGroup(COLLISION_GROUP_WORLD) -- no collide
 	self:DrawShadow(false)
+    -- Witness native RadiusDamage without becoming a destructible portal.
+    self:SetSaveValue("m_takedamage", DAMAGE_YES or 2)
 
 	-- defaults and portal format conversion. welcome to tech debt hell
 	local map_format = self.SEAMLESS_PORTALS_MAP_FORMAT
@@ -124,34 +171,30 @@ function ENT:Initialize()
 		self:SetSize(Vector(100, 100, 8))
 	end
 
-	-- clamp to prevent exploiting, no fun allowed :)
-	size = self:GetSize()
-	for i = 1, 3 do
-		size[i] = math.Clamp(size[i], 1, 1000)
-	end
-	self:SetSize(size)
-
-	sides = self:GetSides()
-	sides = math.Clamp(sides, 3, 100)
-	self:SetSides(sides)
+	-- Reject runtime edits; recover only unconfigured/legacy initial state here.
+	if not SeamlessPortals.ValidateSize(self:GetSize()) then self:SetSize(Vector(100, 100, 8)) end
+	if not SeamlessPortals.ValidateSides(self:GetSides()) then self:SetSides(4) end
 
 	self.SEAMLESS_PORTALS_INITIALIZED = true
-	self:UpdatePhysmesh()
+	if not self:ReconcileGeometry() then SafeRemoveEntity(self) return end
 
 	table.insert(SeamlessPortals.Portals, self)
 end
 
-function ENT:OnRemove()
-	if self:GetRemoveExit() then
-		SafeRemoveEntity(self:GetExitPortal())
-	end
 
-	table.RemoveByValue(SeamlessPortals.Portals, self)
+function ENT:OnRemove()
+    local exit = self:GetExitPortal()
+    local remove_exit = self:GetRemoveExit() and SeamlessPortals.IsPortal(exit) and exit ~= self
+        and exit:GetExitPortal() == self
+    self:UnlinkPortal()
+    if remove_exit then SafeRemoveEntity(exit) end
+    table.RemoveByValue(SeamlessPortals.Portals, self)
+    SeamlessPortals.LinkedRegistryDirty = true
 end
 
 function ENT:SpawnFunction(ply, tr)
 	local portal1 = ents.Create("seamless_portal")
-	if not IsValid(portal1) then return end
+	if not SeamlessPortals.IsLiveEntity(portal1) then return end
 
 	portal1:SetPos(tr.HitPos + tr.HitNormal * 160.1)
 	portal1:SetAngles(tr.HitNormal:AngleEx(Vector(0, 0, -1)))
@@ -159,7 +202,7 @@ function ENT:SpawnFunction(ply, tr)
 	portal1:Spawn()
 
 	local portal2 = ents.Create("seamless_portal")
-	if not IsValid(portal2) then return end
+	if not SeamlessPortals.IsLiveEntity(portal2) then SafeRemoveEntity(portal1) return end
 
 	portal2:SetPos(tr.HitPos + tr.HitNormal * 50.1)
 	portal2:SetAngles(tr.HitNormal:AngleEx(Vector(0, 0, -1)))
@@ -181,42 +224,61 @@ function ENT:UpdateTransmitState()
 	return TRANSMIT_ALWAYS
 end
 
+
 function ENT:UpdateCutout(recursive)
-	local exit_portal = self:GetExitPortal()
-	if !IsValid(exit_portal) then return end
-
-	local self_pos = self:GetPos()
-	local cutout = self.SEAMLESS_PORTALS_CUTOUT
-	if !IsValid(cutout) then
-		cutout = ents.Create("seamless_portal_cutout")
-		cutout:SetPortal(self)
-		cutout:Spawn()
-		self:DeleteOnRemove(cutout)
-		self.SEAMLESS_PORTALS_CUTOUT = cutout
-	end
-
-	if recursive or (FrameNumber() % 15 == 0 and cutout:GetPos() != self_pos) then
-		cutout:SetPos(self_pos)
-		cutout:SetAngles(self:GetAngles())
-		cutout:GeneratePhysmesh(exit_portal, self)
-		cutout:GeneratePhysmesh(self)
-		cutout:CreatePhysmesh()
-
-		if !recursive then
-			exit_portal:UpdateCutout(true)
-		end
-	end
+    local exit = self:GetExitPortal()
+    -- Clone transfer assumes a reciprocal pair; directed map links still work
+    -- for players, rendering and traces, but never borrow an unrelated cutout.
+    if not SeamlessPortals.SupportsPropTraversal(self, exit) or exit:GetExitPortal() ~= self then
+        self:DiscardTraversalState()
+        return false
+    end
+    local snapshot = SeamlessPortals.CaptureGeometry(self)
+    local old = self.SEAMLESS_PORTALS_CUTOUT
+    if not SeamlessPortals.IsLiveEntity(old) or not old.SEAMLESS_PORTALS_READY
+        or not SeamlessPortals.SameGeometry(old.SEAMLESS_PORTALS_GEOMETRY, snapshot) then
+        -- A stale shape is never retained as a collision-disabled crossing region.
+        self:DiscardTraversalState()
+        local cutout = ents.Create("seamless_portal_cutout")
+        if not SeamlessPortals.IsLiveEntity(cutout) then return false end
+        cutout:SetPortal(self)
+        cutout:SetPos(self:GetPos())
+        cutout:SetAngles(self:GetAngles())
+        cutout:Spawn()
+        if not SeamlessPortals.IsLiveEntity(cutout) then return false end
+        cutout:GeneratePhysmesh(exit, self)
+        cutout:GeneratePhysmesh(self)
+        if not cutout:CreatePhysmesh() then SafeRemoveEntity(cutout) return false end
+        cutout.SEAMLESS_PORTALS_GEOMETRY = snapshot
+        cutout.SEAMLESS_PORTALS_READY = true
+        self:DeleteOnRemove(cutout)
+        self.SEAMLESS_PORTALS_CUTOUT = cutout
+    end
+    if not recursive then
+        local ready = exit:UpdateCutout(true)
+        if not ready then self:DiscardTraversalState() end
+        return ready
+    end
+    return true
 end
 
 -- Prop and object teleporting
 function ENT:Think()
+	if not self:ReconcileGeometry() then self:DiscardTraversalState() return end
 	local exit_portal = self:GetExitPortal()
 	if !IsValid(exit_portal) or self == exit_portal then
-		SafeRemoveEntity(self.SEAMLESS_PORTALS_CUTOUT)
+		self:DiscardTraversalState()
 		return
 	end
 
-	self:UpdateCutout()
+	if not self:UpdateCutout() then return end
+	local ready_cutout = self.SEAMLESS_PORTALS_CUTOUT
+	if not IsValid(ready_cutout) then return end
+	if next(ready_cutout.ENTITIES) == nil then
+		-- Keep cutout admission at tick frequency; avoid all clone/transfer setup when idle.
+		self:NextThink(CurTime())
+		return true
+	end
 
 	local exit_pos = exit_portal:GetPos()
 	local self_pos = self:GetPos()
@@ -231,46 +293,78 @@ function ENT:Think()
 		if !IsValid(phys) then continue end
 
 		local clone = ent.SEAMLESS_PORTALS_CLONE
-		if !IsValid(clone) then
+		if not SeamlessPortals.IsLiveEntity(clone) then
 			clone = ents.Create("seamless_portal_clone")
+			if not SeamlessPortals.IsLiveEntity(clone) then cutout:RemoveEntity(ent) continue end
 			clone:SetChild(ent)
 			clone:SetPortal1(self)
 			clone:SetPortal2(exit_portal)
 			clone:Spawn()
+			if not SeamlessPortals.IsLiveEntity(clone) or not IsValid(clone:GetPhysicsObject()) then SafeRemoveEntity(clone) cutout:RemoveEntity(ent) continue end
 			ent.SEAMLESS_PORTALS_CLONE = clone
 			clone.SEAMLESS_PORTALS_CUTOUT = exit_cutout
+            if not exit_cutout:AddProxy(clone) then cutout:RemoveEntity(ent) continue end
 		end
 
-		if ent:IsPlayerHolding() then continue end
+		if ent:IsPlayerHolding() or (SeamlessPortals.CarryKeepsAdmission and SeamlessPortals.CarryKeepsAdmission(ent,self)) then continue end
 
 		local ent_pos = ent:GetPos()
 		local ent_pos_center = ent:LocalToWorld(ent:OBBCenter())
-		if (ent_pos_center - self_pos):Dot(self_up) > 0 then continue end
+		if (ent_pos_center - self_pos):Dot(self_up) >= -0.05 then continue end
 
+		if not exit_cutout_valid or not exit_cutout.SEAMLESS_PORTALS_READY then cutout:RemoveEntity(ent) continue end
+        if ent.SEAMLESS_PORTALS_LAST_TRANSFER == engine.TickCount() then continue end
+        if constraint.HasConstraints(ent) then
+            local plan, reason = SeamlessPortals.PlanTransport(ent, self, exit_portal)
+            if plan then
+                local ok
+                ok, reason = SeamlessPortals.CommitTransport(plan)
+                if ok then SeamlessPortals.NotifyTransport(plan, "assembly") end
+            end
+            if reason then ent.SEAMLESS_PORTALS_TRANSPORT_BLOCKED = reason end
+            continue
+        end
+		local transaction = clone:PrepareTransfer(ent)
+		if not transaction then cutout:RemoveEntity(ent) continue end
+		phys = ent:GetPhysicsObject()
+		if not IsValid(phys) then clone:RollbackTransfer(transaction) cutout:RemoveEntity(ent) continue end
 		local new_pos, new_ang = SeamlessPortals.TransformPortal(self, exit_portal, ent_pos, ent:GetAngles())
-		local ent_vel = phys:GetVelocity()
-		ent_vel:Add(self_pos)
+		local new_vel = SeamlessPortals.TransformDirection(self, exit_portal, phys:GetVelocity(), true)
 
-		local new_vel = SeamlessPortals.TransformPortal(self, exit_portal, ent_vel)
-		new_vel:Sub(exit_pos)
-
-		cutout:RemoveEntity(ent, exit_cutout_valid)
-		if exit_cutout_valid then exit_cutout:AddEntity(ent) end
+		cutout:RemoveEntity(ent, true)
+		if not exit_cutout:AddEntity(ent) then
+			clone:RollbackTransfer(transaction)
+			SafeRemoveEntity(clone)
+			continue
+		end
 
 		ent:ForcePlayerDrop()
 		clone:ForcePlayerDrop()
 		ent:SetPos(new_pos) -- avoid physobj lerp
 		ent:SetAngles(new_ang)
 		phys:SetVelocity(new_vel)
-		clone:SetPortal1(exit_portal)
+		if IsValid(clone.SEAMLESS_PORTALS_PROXY_CUTOUT) then clone.SEAMLESS_PORTALS_PROXY_CUTOUT:RemoveProxy(clone) end
+        clone:SetPortal1(exit_portal)
 		clone:SetPortal2(self)
-		clone:VerletWeld(clone, ent, true)
-
-		if ent:BoundingRadius() < 0.5 then -- too small!
-			SafeRemoveEntity(ent)
+        if not cutout:AddProxy(clone) then exit_cutout:RemoveEntity(ent) continue end
+		if not clone:VerletWeld(clone, ent, true, true) then
+			exit_cutout:RemoveEntity(ent)
+			continue
 		end
+		-- Outputs describe a completed transfer, not admission into a cutout.
+		ent.SEAMLESS_PORTALS_LAST_TRANSFER = engine.TickCount()
+        self:TriggerOutput("OnTeleportFrom", ent)
+		if IsValid(exit_portal) and IsValid(ent) then exit_portal:TriggerOutput("OnTeleportTo", ent) end
+		if not SeamlessPortals.IsLiveEntity(ent) then continue end
+
+        -- Small objects are not disposable. Preserve ownership and contents.
 	end
 
 	self:NextThink(CurTime())
 	return true
+end
+
+-- RadiusDamage reaches this even when no ordinary entity is near the source.
+function ENT:OnTakeDamage(info)
+    if SeamlessPortals.ObserveNativeBlast then SeamlessPortals.ObserveNativeBlast(self,info,false) end
 end

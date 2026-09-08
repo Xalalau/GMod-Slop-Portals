@@ -1,3 +1,11 @@
+# Custom RC2 behavior additions
+
+The current FGD adds `disablePropTeleport`, `disablePlayerTeleport`, `disableDamageTransfer`, `disableSoundTransfer` (all stored default 0, meaning enabled), and `enableFunneling` (default 0, meaning off). Matching Enable/Disable inputs are documented in [CONFIGURATION.md](CONFIGURATION.md). Player and prop outputs remain `OnTeleportFrom` / `OnTeleportTo`. A held player is blocked as a unit when prop transfer is disabled; it is not forcibly dropped.
+
+Old SEv map-instance schemas and the missing `sev_portal` class are not automatically migrated. Keep `seamless_portal` entities in this build. Directed links support the existing player/render/trace use cases, not physical held/assembly transport.
+
+## Retained geometry and linking guide
+
 # Using Seamless Portals with Hammer
 
 ## Setup
@@ -31,3 +39,10 @@ Now the portals are set up. If you compile the map and run it with the addon tur
 1. Do not make your portals super thin, they should be at least 8 units thick (z axis) to avoid flashing, thicker if possible
 2. Portals effectively rerender the entire scene, so try and keep whatever world geometry is visible from a portal semi optimized.
 3. Ensure the wall geometry around each portal seam is basically perfect, so you don't get stuck mid-teleport. Ground too, though the portals will attempt to extrude you upward as best they can.
+
+
+# Integrated RC1 compatibility notes
+
+The `link` keyvalue and `Link` input require a unique target name resolving to another portal. Links are directed; use reciprocal endpoint names for two-way pairs. Width/height aspect ratios must match. Rendering, player and eligible line-trace paths are retained for directed links, but **physics prop cutouts require distinct reciprocal four-sided pairs**. Nonrectangular portals and nonreciprocal directed networks do not admit props in this build.
+
+`OnTeleportFrom` and `OnTeleportTo` are emitted after a completed supported prop transfer as well as for players. Native output timing, map conversion and the sampled geometry still need testing on the actual map. The original legacy format conversion is retained; this build does not implement a canonical-polygon migration. See `RELEASE_NOTES.md` before replacing an addon used by an existing map.

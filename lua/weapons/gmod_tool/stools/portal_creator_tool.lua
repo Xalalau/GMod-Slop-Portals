@@ -30,16 +30,10 @@ if CLIENT then
     language.Add("Tool.portal_creator_tool.right2", "Right Click: Create link to another portal")
     language.Add("Tool.portal_creator_tool.reload", "Reload: Unlink a portal")
 
-    CreateClientConVar("seamless_portals_size_x", "100", false, true, "Sets the size of the portal along the X axis", 1, 1000)
-	CreateClientConVar("seamless_portals_size_y", "100", false, true, "Sets the size of the portal along the Y axis", 1, 1000)
-	CreateClientConVar("seamless_portals_size_z", "8", false, true, "Sets the size of the portal along the Z axis", 1, 100)
-	CreateClientConVar("seamless_portals_sides", "4", false, true, "Sets the number of sides the portal has", 3, 100)
-	CreateClientConVar("seamless_portals_backface", "1", false, true, "Sets whether to spawn with a backface or not", 0, 1)
-	CreateClientConVar("seamless_portals_align", "1", false, true, "Enable/Disable Portal creator alignment helper", 0, 1)
-	CreateClientConVar("seamless_portals_toolsided", "1", false, true, "Enable/Disable whether the tooled side is the front.", 0, 1)
 
 	function TOOL.BuildCPanel(panel)
 		panel:AddControl("label", {text = "Creates and links portals"})
+        SeamlessPortals.AddFeatureControls(panel)
 		panel:NumSlider("Portal Size X", "seamless_portals_size_x", 1, 1000, 1)
 		panel:NumSlider("Portal Size Y", "seamless_portals_size_y", 1, 1000, 1)
 		panel:NumSlider("Portal Size Z", "seamless_portals_size_z", 1, 100, 1)
@@ -97,8 +91,16 @@ function TOOL:GetPlacementPosition(trace)
     return portal_pos, portal_ang, portal_size
 end
 
+-- Portal creator and fitter use the same Sandbox quota bucket.
+if SERVER then
+    CreateConVar("sbox_maxseamless_portals", "20", FCVAR_ARCHIVE, "Maximum tool-created portals per player", 0, 1000)
+    cleanup.Register("seamless_portals")
+end
+
 -- portal creation
 function TOOL:LeftClick(trace)
+    trace=SeamlessPortals.RawToolTrace(self,trace,1)
+    if not trace then return false end
 	if !trace.Hit then return false end
 
 	local pos, ang, size = self:GetPlacementPosition(trace)
@@ -107,20 +109,28 @@ function TOOL:LeftClick(trace)
 	if CLIENT then return true end -- prediction
 
 	local owner = self:GetOwner()
+	if not owner.CheckLimit or not owner.AddCount or not owner:CheckLimit("seamless_portals") then return false end
+	local sides = owner:GetInfoNum("seamless_portals_sides", 4)
+	if not SeamlessPortals.ValidateSize(size) or not SeamlessPortals.ValidateSides(sides) then return false end
 	local portal = ents.Create("seamless_portal")
+	if not SeamlessPortals.IsLiveEntity(portal) then return false end
 	portal:SetPos(pos)
 	portal:SetAngles(ang)
 	portal:SetCreator(owner)
-	portal:SetSize(size) -- set size before portal creation so it gets internally clamped
-	portal:SetSides(owner:GetInfoNum("seamless_portals_sides", 4))
-	portal:SetDisableBackface(owner:GetInfoNum("seamless_portals_backface", 1) == 0)
+	if not portal:Configure(size, sides, owner:GetInfoNum("seamless_portals_backface", 1) == 0) then
+		SafeRemoveEntity(portal)
+		return false
+	end
 	portal:Spawn()
+	if not SeamlessPortals.IsLiveEntity(portal) then return false end
+	SeamlessPortals.ApplyToolFeatures(portal,owner)
+	owner:AddCount("seamless_portals", portal)
 
 	if CPPI then
 		portal:CPPISetOwner(owner)
 	end
 
-	cleanup.Add(owner, "props", portal)
+	cleanup.Add(owner, "seamless_portals", portal)
 	undo.Create("Seamless Portal")
 		undo.AddEntity(portal)
 		undo.SetPlayer(owner)
@@ -144,6 +154,8 @@ end
 
 
 function TOOL:RightClick(trace)
+    trace=SeamlessPortals.RawToolTrace(self,trace,2)
+    if not trace then return false end
 	if !trace.Hit then return false end
 	local owner = self:GetOwner()
 	local portal = trace.Entity
@@ -170,7 +182,8 @@ function TOOL:RightClick(trace)
 		self:SetStage(2)
 	else
 		local portal_1 = self:GetLinkTarget()
-		portal:LinkPortal(portal_1)
+        if not portal:LinkPortal(portal_1) then return false end
+        self:SetLinkTarget(NULL)
 		self:SetStage(1)
 	end
 
@@ -179,12 +192,14 @@ end
 
 -- portal unlinking
 function TOOL:Reload(trace)
+    trace=SeamlessPortals.RawToolTrace(self,trace,3)
+    if not trace then return false end
 	local portal = trace.Entity
 	if !IsValid(portal) or portal:GetClass() ~= "seamless_portal" then return false end
 
 	if CLIENT then return true end
 
-	portal:SetExitPortal(nil)
+	portal:UnlinkPortal()
 	return true
 end
 

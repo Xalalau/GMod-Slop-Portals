@@ -9,25 +9,42 @@ ENT.Instructions = ""
 ENT.Spawnable    = true
 ENT.RenderGroup  = RENDERGROUP_OPAQUE
 
-SeamlessPortals  = SeamlessPortals or {}
+AddCSLuaFile("seamless_portals/core.lua")
+include("seamless_portals/core.lua")
 
 function ENT:SetupDataTables()
 	self:NetworkVar("Entity", 0, "ExitPortal")
 	self:NetworkVar("Vector", 0, "SizeInternal")
 	self:NetworkVar("Vector", 1, "Size")
 	self:NetworkVar("Bool", 0, "DisableBackface")
+	self:NetworkVar("Bool", 1, "RemoveExitInternal")
 	self:NetworkVar("Int", 0, "Sides")
+	self:NetworkVar("Int", 1, "ConfigurationRevision")
 
-	-- rebuild collision mesh if resized
-	self:NetworkVarNotify("Size", function(self, _, old, new)
-		if !self.SEAMLESS_PORTALS_INITIALIZED or old == new then return end
-		self:UpdatePhysmesh(new, nil)
-	end)
+	-- Wrap generated setters: reject invalid requests without publishing them.
+    local raw_size, raw_sides = self.SetSize, self.SetSides
+    self.SetSize = function(ent, value)
+        if not SeamlessPortals.ValidateSize(value) then return false end
+        local exit = ent:GetExitPortal()
+        if not ent.SEAMLESS_PORTALS_CONFIGURING_PAIR and SeamlessPortals.IsPortal(exit)
+            and not SeamlessPortals.AspectCompatibleSize(value, exit:GetSize()) then return false end
+        raw_size(ent, Vector(value))
+        SeamlessPortals.LinkedRegistryDirty = true
+        return true
+    end
+    self.SetSides = function(ent, value)
+        if not SeamlessPortals.ValidateSides(value) then return false end
+        raw_sides(ent, value)
+        return true
+    end
 
-	self:NetworkVarNotify("Sides", function(self, _, old, new)
-		if !self.SEAMLESS_PORTALS_INITIALIZED or old == new then return end
-		self:UpdatePhysmesh(nil, new)
-	end)
+	self.SEAMLESS_PORTALS_GEOMETRY_DIRTY = true
+	local function dirty(ent, _, old, new)
+		if old ~= new then ent.SEAMLESS_PORTALS_GEOMETRY_DIRTY = true end
+	end
+	self:NetworkVarNotify("Size", dirty)
+	self:NetworkVarNotify("Sides", dirty)
+	self:NetworkVarNotify("ExitPortal", function() SeamlessPortals.LinkedRegistryDirty = true end)
 end
 
 -- So the size is in source units (remember we are using sine/cosine)
@@ -35,8 +52,10 @@ local size_mult = Vector(math.sqrt(2) / 2, math.sqrt(2) / 2, 1)
 
 -- Scale the phys mesh
 function ENT:UpdatePhysmesh(size, sides)
-	size = (size or self:GetSize()) * size_mult
+	size = size or self:GetSize()
 	sides = sides or self:GetSides()
+	if not SeamlessPortals.ValidateSize(size) or not SeamlessPortals.ValidateSides(sides) then return false end
+	size = size * size_mult
 
 	local finalMesh = {}
 	local ang_mul = 360 / sides
@@ -60,13 +79,16 @@ function ENT:UpdatePhysmesh(size, sides)
 
 	if CLIENT then
 		--self:MakePhysicsObjectAShadow(false, false)
-		self:SetRenderBounds(-size, size)
+		local mins, maxs = SeamlessPortals.GetApertureBounds(self:GetSize(), sides)
+		if mins then self:SetRenderBounds(mins, maxs) end
 	end
 
 	local phys = self:GetPhysicsObject()
+	if not IsValid(phys) then return false end
 	phys:EnableMotion(false)
 	phys:SetMaterial("glass")
 	phys:SetMass(250)
+	return true
 end
 
 SeamlessPortals.Portals = SeamlessPortals.Portals or {}
@@ -103,7 +125,7 @@ end
 
 -- Only render the portals that are in the frustum, or should be rendered
 SeamlessPortals.ShouldRender = function(portal, eyePos, eyeAngle, distance)
-  if portal:IsDormant() then return false end
+  if portal:IsDormant() or not SeamlessPortals.IsUsableLink(portal, portal:GetExitPortal()) then return false end
 	local portalPos, portalUp, exitSize = portal:GetPos(), portal:GetUp(), portal:GetSize()
 	local max, eye = math.max(exitSize[1], exitSize[2]), (eyePos - portalPos)
 	-- (eyePos - portalPos):Dot(portalUp) > (-10 * max) -- true if behind the portal, false otherwise
@@ -112,4 +134,72 @@ SeamlessPortals.ShouldRender = function(portal, eyePos, eyeAngle, distance)
 	if(eye:Dot(portalUp) <= -exitSize[3]) then return false end -- First condition is not met so bail put
 	if(eye:LengthSqr() >= distance^2 * max) then return false end -- Second condition is not met so bail put
 	return (eye:Dot(eyeAngle:Forward()) < max) -- Decides the return value of the function
+end
+
+-- Notifications may precede assignment or be absent during initial replication.
+function ENT:ReconcileGeometry()
+    local size, sides = self:GetSize(), self:GetSides()
+    if not SeamlessPortals.ValidateSize(size) or not SeamlessPortals.ValidateSides(sides) then
+        self.SEAMLESS_PORTALS_GEOMETRY_FAILED = true
+        return false
+    end
+    if self.SEAMLESS_PORTALS_GEOMETRY_DIRTY or self.SEAMLESS_PORTALS_BUILT_SIZE ~= size
+        or self.SEAMLESS_PORTALS_BUILT_SIDES ~= sides or not IsValid(self:GetPhysicsObject()) then
+        if not self:UpdatePhysmesh(size, sides) then
+            self.SEAMLESS_PORTALS_GEOMETRY_FAILED = true
+            return false
+        end
+        self.SEAMLESS_PORTALS_BUILT_SIZE = Vector(size)
+        self.SEAMLESS_PORTALS_BUILT_SIDES = sides
+        self.SEAMLESS_PORTALS_BUILT_REVISION = self:GetConfigurationRevision()
+        self.SEAMLESS_PORTALS_GEOMETRY_DIRTY = false
+    end
+    self.SEAMLESS_PORTALS_GEOMETRY_FAILED = false
+    return true
+end
+
+function ENT:GetRemoveExit()
+    return self:GetRemoveExitInternal()
+end
+
+function ENT:Configure(size, sides, disable_backface)
+    if CLIENT then return false end
+    if not SeamlessPortals.ValidateSize(size) or not SeamlessPortals.ValidateSides(sides)
+        or not isbool(disable_backface) then return false end
+    local exit = self:GetExitPortal()
+    if not self.SEAMLESS_PORTALS_CONFIGURING_PAIR and SeamlessPortals.IsPortal(exit)
+        and not SeamlessPortals.AspectCompatibleSize(size, exit:GetSize()) then return false end
+    if not self:SetSize(size) or not self:SetSides(sides) then return false end
+    self:SetDisableBackface(disable_backface)
+    self:SetConfigurationRevision((self:GetConfigurationRevision() + 1) % 2147483647)
+    self.SEAMLESS_PORTALS_GEOMETRY_DIRTY = true
+    self:NextThink(CurTime())
+    return true
+end
+
+-- Custom-compatible public accessors; the NW keys remain compatible with map code.
+function ENT:GetDisablePropTeleport() return not SeamlessPortals.FeatureEnabled(self, "props") end
+function ENT:SetDisablePropTeleport(value) return SeamlessPortals.SetFeature(self, "props", not value) end
+function ENT:GetEnableFunneling() return SeamlessPortals.FeatureEnabled(self, "funnel") end
+function ENT:SetEnableFunneling(value) return SeamlessPortals.SetFeature(self, "funnel", value) end
+function ENT:AddPlyUsageCallback(id, callback)
+    if not SERVER or not isstring(id) or not isfunction(callback) then return false end
+    self.SEAMLESS_PORTALS_USAGE_CALLBACKS = self.SEAMLESS_PORTALS_USAGE_CALLBACKS or {}
+    self.SEAMLESS_PORTALS_USAGE_CALLBACKS[id] = callback
+    return true
+end
+function ENT:RemovePlyUsageCallback(id)
+    if self.SEAMLESS_PORTALS_USAGE_CALLBACKS then self.SEAMLESS_PORTALS_USAGE_CALLBACKS[id] = nil end
+end
+function ENT:RunPlyUsageCallbacks(ply, phase, other)
+    local snapshot = {}
+    for id, callback in pairs(self.SEAMLESS_PORTALS_USAGE_CALLBACKS or {}) do
+        snapshot[#snapshot + 1] = {id, callback}
+    end
+    table.sort(snapshot, function(a, b) return a[1] < b[1] end)
+    for _, item in ipairs(snapshot) do
+        if not IsValid(self) or not IsValid(ply) then break end
+        local ok, err = xpcall(function() item[2](ply, self, phase, other) end, debug.traceback)
+        if not ok then ErrorNoHalt("[Seamless Portals] callback " .. item[1] .. ": " .. tostring(err) .. "\n") end
+    end
 end

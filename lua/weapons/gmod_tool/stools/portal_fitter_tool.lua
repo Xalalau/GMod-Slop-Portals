@@ -16,10 +16,10 @@ if CLIENT then
     language.Add("Tool.portal_fitter_tool.right2", "Right Click: Create link to another portal")
 	language.Add("Tool.portal_fitter_tool.reload", "Reload: Unlink a portal")
 
-    CreateClientConVar("seamless_portals_snap_angle", "90", false, true, "Portal Snap Angle, in Degrees", 0, 90)
 
 	function TOOL.BuildCPanel(panel)
 		panel:AddControl("label", {text = "Creates a fitted portal"})
+        SeamlessPortals.AddFeatureControls(panel)
 		panel:NumSlider("Portal Snap Angle", "seamless_portals_snap_angle", 0, 90, 0)
 		panel:NumSlider("Portal Size Z", "seamless_portals_size_z", 1, 100, 1)
 		panel:CheckBox("Has Backface (Invisible until linked!)", "seamless_portals_backface")
@@ -28,7 +28,7 @@ if CLIENT then
 end
 
 function TOOL:EasyTrace(pos, dir)
-    return util.TraceLine({
+    return SeamlessPortals.TraceLine({
         start = pos,
         endpos = pos + dir * 500,
         filter = self:GetOwner()
@@ -51,10 +51,10 @@ function TOOL:GetPlacementPosition(tr)
         ang[2] = math.Round(ang[2] / snap_angle) * snap_angle
     end
 
-    tr.HitNormal:Mul(ply:GetInfoNum("seamless_portals_size_z", 1) + 1)
+    local offset_normal = Vector(tr.HitNormal) * (ply:GetInfoNum("seamless_portals_size_z", 1) + 1)
 
-    local left = self:EasyTrace(tr.HitPos + tr.HitNormal, -ang:Right())
-    local right = self:EasyTrace(tr.HitPos + tr.HitNormal, ang:Right())
+    local left = self:EasyTrace(tr.HitPos + offset_normal, -ang:Right())
+    local right = self:EasyTrace(tr.HitPos + offset_normal, ang:Right())
 
     local pos = (left.HitPos + right.HitPos) / 2
     local down = self:EasyTrace(pos, -ang:Up())

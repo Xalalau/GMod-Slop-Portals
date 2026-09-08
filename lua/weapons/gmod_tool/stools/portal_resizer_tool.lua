@@ -5,11 +5,11 @@ if CLIENT then
 	language.Add("Tool.portal_resizer_tool.name", "Portal Resizer")
 	language.Add("Tool.portal_resizer_tool.desc", "Sets the size of portals")
 
-	TOOL.ConvarX = CreateClientConVar("seamless_portals_size_x", "100", false, true, "Sets the size of the portal along the X axis", 10, 1000)
-	TOOL.ConvarY = CreateClientConVar("seamless_portals_size_y", "100", false, true, "Sets the size of the portal along the Y axis", 10, 1000)
-	TOOL.ConvarZ = CreateClientConVar("seamless_portals_size_z", "8", false, true, "Sets the size of the portal along the Z axis", 1, 100)
-	TOOL.ConvarSides = CreateClientConVar("seamless_portals_sides", "1", false, true, "Sets the number of sides of the portal", 3, 100)
-	TOOL.ConvarB = CreateClientConVar("seamless_portals_backface", "1", false, true, "Sets whether to spawn with a backface or not", 0, 1)
+	TOOL.ConvarX = SeamlessPortals.ClientConVars.size_x
+	TOOL.ConvarY = SeamlessPortals.ClientConVars.size_y
+	TOOL.ConvarZ = SeamlessPortals.ClientConVars.size_z
+	TOOL.ConvarSides = SeamlessPortals.ClientConVars.sides
+	TOOL.ConvarB = SeamlessPortals.ClientConVars.backface
 
 	TOOL.Information = {
 		{name = "left"},
@@ -17,14 +17,14 @@ if CLIENT then
 	}
 
 	language.Add("Tool.portal_resizer_tool.left", "Left Click: Set the size of a portal" )
-	language.Add("Tool.portal_resizer_tool.right", "Right Click: Copy the size of a portal (doesn't work in singleplayer!)")
+	language.Add("Tool.portal_resizer_tool.right", "Right Click: Copy portal size, sides and backface")
 
 	function TOOL.BuildCPanel(panel)
 		panel:AddControl("label", {
 			text = "Sets the size of portals",
 		})
-		panel:NumSlider("Portal Size X", "seamless_portals_size_x", 10, 1000, 1)
-		panel:NumSlider("Portal Size Y", "seamless_portals_size_y", 10, 1000, 1)
+		panel:NumSlider("Portal Size X", "seamless_portals_size_x", 1, 1000, 1)
+		panel:NumSlider("Portal Size Y", "seamless_portals_size_y", 1, 1000, 1)
 		panel:NumSlider("Portal Size Z", "seamless_portals_size_z", 1, 100, 1)
 		panel:NumSlider("Portal Sides", "seamless_portals_sides", 3, 100, 0)
 		panel:CheckBox("Has Backface (Invisible until linked!)", "seamless_portals_backface")
@@ -49,35 +49,48 @@ if CLIENT then
 end
 
 function TOOL:LeftClick(trace)
-	local traceTable = util.GetPlayerTrace(self:GetOwner())
-	local trace = SeamlessPortals.TraceLine(traceTable)
+    trace=SeamlessPortals.RawToolTrace(self,trace,1)
+    if not trace then return false end
+	if not trace then return false end
 
 	if !IsValid(trace.Entity) or trace.Entity:GetClass() != "seamless_portal" then return false end
-	if CPPI and SERVER then if !trace.Entity:CPPICanTool(self:GetOwner(), "remover") then return false end end
+	if CPPI and SERVER then if !trace.Entity:CPPICanTool(self:GetOwner(), "portal_resizer_tool") then return false end end
 		if CLIENT then return true end
 	local sizex = self:GetOwner():GetInfoNum("seamless_portals_size_x", 1)
 	local sizey = self:GetOwner():GetInfoNum("seamless_portals_size_y", 1)
 	local sizez = self:GetOwner():GetInfoNum("seamless_portals_size_z", 1)
-	trace.Entity:SetSize(Vector(math.Clamp(sizex, 10, 1000), math.Clamp(sizey, 10, 1000), math.Clamp(sizez, 1, 100)))
-	trace.Entity:SetDisableBackface(self:GetOwner():GetInfoNum("seamless_portals_backface", 1) == 0)
-	trace.Entity:SetSides(self:GetOwner():GetInfoNum("seamless_portals_sides", 1))
-	return true
+	local size = Vector(sizex, sizey, sizez)
+	local sides = self:GetOwner():GetInfoNum("seamless_portals_sides", 4)
+	if not SeamlessPortals.ValidateSize(size) or not SeamlessPortals.ValidateSides(sides) then return false end
+	return trace.Entity:Configure(size, sides, self:GetOwner():GetInfoNum("seamless_portals_backface", 1) == 0)
+end
+
+
+if SERVER then
+    util.AddNetworkString("SEAMLESS_PORTALS_COPY_CONFIGURATION")
+else
+    net.Receive("SEAMLESS_PORTALS_COPY_CONFIGURATION", function()
+        local size = net.ReadVector()
+        local sides, backface = net.ReadUInt(7), net.ReadBool()
+        if not SeamlessPortals.ValidateSize(size) or not SeamlessPortals.ValidateSides(sides) then return end
+        RunConsoleCommand("seamless_portals_size_x", tostring(size[1]))
+        RunConsoleCommand("seamless_portals_size_y", tostring(size[2]))
+        RunConsoleCommand("seamless_portals_size_z", tostring(size[3]))
+        RunConsoleCommand("seamless_portals_sides", tostring(sides))
+        RunConsoleCommand("seamless_portals_backface", backface and "1" or "0")
+    end)
 end
 
 function TOOL:RightClick()
-	local traceTable = util.GetPlayerTrace(self:GetOwner())
-	local trace = SeamlessPortals.TraceLine(traceTable)
-
-	if !IsValid(trace.Entity) or trace.Entity:GetClass() != "seamless_portal" then
-		return false
-	end
-
-	if CLIENT and IsFirstTimePredicted() then
-		local size = trace.Entity:GetSize()
-		self.ConvarX:SetInt(size[1])
-		self.ConvarY:SetInt(size[2])
-		self.ConvarZ:SetInt(size[3])
-	end
+    if CLIENT then return true end
+    local owner = self:GetOwner()
+    local trace = SeamlessPortals.TraceLine(util.GetPlayerTrace(owner))
+    if not SeamlessPortals.IsPortal(trace.Entity) then return false end
+    net.Start("SEAMLESS_PORTALS_COPY_CONFIGURATION")
+    net.WriteVector(trace.Entity:GetSize())
+    net.WriteUInt(trace.Entity:GetSides(), 7)
+    net.WriteBool(not trace.Entity:GetDisableBackface())
+    net.Send(owner)
 
 	return true
 end

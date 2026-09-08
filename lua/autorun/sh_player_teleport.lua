@@ -48,13 +48,26 @@ local function invalidate_hull(ply)
 
 	ply.SEAMLESS_PORTALS_HULL_MINS, ply.SEAMLESS_PORTALS_HULL_MAXS = ply:GetHull()
 	ply.SEAMLESS_PORTALS_HULL_DUCK_MINS, ply.SEAMLESS_PORTALS_HULL_DUCK_MAXS = ply:GetHullDuck()
+	for _, name in ipairs({"MINS", "MAXS", "DUCK_MINS", "DUCK_MAXS"}) do
+		local key = "SEAMLESS_PORTALS_HULL_" .. name
+		ply[key] = Vector(ply[key])
+	end
 end
 
 local function validate_hull(ply)
 	if !ply.SEAMLESS_PORTALS_HULL_MINS then return false end
 
-	-- TODO: does calling ResetHull cause any problems with resizing mods?
-	ply:ResetHull()
+	local mins, maxs = ply:GetHull()
+	local duck_mins, duck_maxs = ply:GetHullDuck()
+	local own = ply.SEAMLESS_PORTALS_LAST_HULL
+	-- Do not overwrite a newer hull installed by another addon.
+	if not own or (mins == own[1] and maxs == own[2]) then
+		ply:SetHull(Vector(ply.SEAMLESS_PORTALS_HULL_MINS), Vector(ply.SEAMLESS_PORTALS_HULL_MAXS))
+	end
+	if not own or (duck_mins == own[3] and duck_maxs == own[4]) then
+		ply:SetHullDuck(Vector(ply.SEAMLESS_PORTALS_HULL_DUCK_MINS), Vector(ply.SEAMLESS_PORTALS_HULL_DUCK_MAXS))
+	end
+	ply.SEAMLESS_PORTALS_LAST_HULL = nil
 
 	ply.SEAMLESS_PORTALS_HULL_MINS = nil
 	ply.SEAMLESS_PORTALS_HULL_MAXS = nil
@@ -86,17 +99,37 @@ local function clip_hull(ply, hull_mins, hull_maxs, half)
 	get_hull_clip(hull_duck_mins, hull_duck_maxs)
 
 	if half then
-		hull_mins[3] = hull_maxs[3]
-		hull_duck_mins[3] = hull_maxs[3] -- genuine fuckshit
+		local thickness = math.max(0.01, 0.01 * ply:GetModelScale())
+		hull_mins[3] = math.max(hull_mins[3], hull_maxs[3] - thickness)
+		hull_duck_mins[3] = math.max(hull_duck_mins[3], hull_duck_maxs[3] - thickness)
 	end
 
+	for i = 1, 3 do
+		if not SeamlessPortals.IsFinite(hull_mins[i]) or not SeamlessPortals.IsFinite(hull_maxs[i])
+			or not SeamlessPortals.IsFinite(hull_duck_mins[i]) or not SeamlessPortals.IsFinite(hull_duck_maxs[i])
+			or hull_mins[i] >= hull_maxs[i] or hull_duck_mins[i] >= hull_duck_maxs[i] then
+			validate_hull(ply)
+			return false
+		end
+	end
 	ply:SetHull(hull_mins, hull_maxs)
 	ply:SetHullDuck(hull_duck_mins, hull_duck_maxs)
+	ply.SEAMLESS_PORTALS_LAST_HULL = {
+		Vector(hull_mins), Vector(hull_maxs), Vector(hull_duck_mins), Vector(hull_duck_maxs)
+	}
 
 	--debugoverlay.Box(ply:GetPos(), hull_mins, hull_maxs, 0.5, Color(255, 0, 0, 0))
 end
 
 local function update_hull(ply, ply_pos)
+	local own = ply.SEAMLESS_PORTALS_LAST_HULL
+	if own then
+		local a, b = ply:GetHull()
+		local c, d = ply:GetHullDuck()
+		if a ~= own[1] or b ~= own[2] or c ~= own[3] or d ~= own[4] then
+			validate_hull(ply) -- release old ownership before capturing a new baseline
+		end
+	end
 	-- no need to modify hull if we're in noclip
 	if ply:GetMoveType() == MOVETYPE_NOCLIP then
 		validate_hull(ply)
@@ -111,16 +144,7 @@ local function update_hull(ply, ply_pos)
 	local tr_hull = util.TraceHull(portal_trace_data)
 	if !tr_hull.Hit then
 		if is_hull_invalid(ply) then
-			-- FIXME: during a teleport, this GetPos will check the ENTERED location, instead of the current
-			-- meaning, it will check the enter location, and possibly think your collision hull is good for validation.
-			-- (possibly sticking you into a wall)
-			-- however, the likelyhood of this is nearly impossible, since you:
-				-- 1. Need enough speed to not overlap the portal on exit
-				-- 2. But not enough speed, since the too_fast check will force this overlap check to reutrn true
-				-- 3. Enter a portal attached to nothing
-				-- 4. Exit into a location which gets the normal hull stuck and non extruded
-			-- I cant replicate this bug at all or find a situation where it happens, so I'm going to just leave this as-is for now
-			ply_pos = ply:GetPos()
+			-- Test the supplied predicted/destination position, not an unrelated entity origin.
 			if util.TraceHull({
 				start = ply_pos,
 				endpos = ply_pos,
@@ -141,7 +165,10 @@ local function update_hull(ply, ply_pos)
 	end
 
 	local portal = tr_hull.Entity
-	if !IsValid(portal:GetExitPortal()) then return end
+	if not SeamlessPortals.IsPortal(portal)
+        or not SeamlessPortals.LinkAllows(portal, portal:GetExitPortal(), "players") then
+        return validate_hull(ply)
+    end
 
 	-- we're about to change hull
 	invalidate_hull(ply)
@@ -199,12 +226,29 @@ end
 
 -- client lerp prevention
 local get_flashlight = CLIENT and include("cl_portal_flashlight.lua")
+local saved_flashlight_color, flashlight_owner
+SeamlessPortals.GetSavedFlashlightColor = function() return saved_flashlight_color end
+local function restore_flashlight_color()
+    if IsValid(flashlight_owner) and saved_flashlight_color then
+        local now = flashlight_owner:GetFlashlightColor()
+        -- Black is the temporary value this addon owns; preserve newer external colors.
+        if now.r == 0 and now.g == 0 and now.b == 0 then
+            flashlight_owner:SetFlashlightColor(saved_flashlight_color)
+        end
+    end
+    saved_flashlight_color, flashlight_owner = nil, nil
+end
 local flashlight = nil -- flashlight will flicker going through (because of player lerp).. create a temporary fake one
-local function lerp_teleport(start_pos, start_vel)
+local transition_revision = 0
+local function lerp_teleport(start_pos, start_vel, transition)
+	if not IsValid(LocalPlayer()) then return end
+	transition_revision = transition_revision + 1
+	local revision = transition_revision
 	SeamlessPortals.Frame = -1 -- force render after a teleport to avoid flashing
 
 	-- reset values after teleport
 	timer.Create("seamless_portals_lerp_teleport", 0.3, 1, function()
+		if revision ~= transition_revision then return end
 		SeamlessPortals.DrawPlayerInView = true
 		hook.Remove("CalcView", "seamless_portals_lerp_teleport")
 		hook.Remove("CalcViewModelView", "seamless_portals_lerp_teleport")
@@ -212,10 +256,14 @@ local function lerp_teleport(start_pos, start_vel)
 
 		-- reset roll / flashlight
 		local ply = LocalPlayer()
+		restore_flashlight_color()
+		if not IsValid(ply) then
+			if flashlight then SeamlessPortals.ReleaseFlashlight("transition") flashlight = nil end
+			return
+		end
 		local ang = ply:EyeAngles() ang[3] = 0
 		ply:SetEyeAngles(ang)
-		ply:SetFlashlightColor(Color(255, 255, 255))
-		if flashlight then flashlight:Remove() end
+		if flashlight then SeamlessPortals.ReleaseFlashlight("transition") flashlight = nil end
 	end)
 
 	local ply = LocalPlayer()
@@ -232,10 +280,15 @@ local function lerp_teleport(start_pos, start_vel)
 		start_pos:Sub(start_vel * FrameTime())
 	end
 
-	local weapon_pos = Vector(start_pos)
+	local bridge_seconds = math.Clamp(ply:Ping() * 0.001 + engine.TickInterval() * 2, 0.03, 0.25)
+    local weapon_pos = Vector(start_pos)
 	local total_frame_time = 0
+	local last_interpolation_frame = -1
 	hook.Add("CalcView", "seamless_portals_lerp_teleport", function(_, pos, ang)
-		local frame_time = FrameTime()
+		if revision ~= transition_revision or not IsValid(ply) then return end
+		if ply:GetViewEntity() ~= ply then restore_flashlight_color() SeamlessPortals.ReleaseFlashlight("transition") flashlight = nil return end
+		local frame_time = last_interpolation_frame == FrameNumber() and 0 or FrameTime()
+		last_interpolation_frame = FrameNumber()
 		ang[3] = ang[3] * math.pow(math.max(0.3 - total_frame_time, 0) / 0.3, 3)
 
 		-- prevents client from seeing small jitter during teleport with portals on differing heights (hack..)
@@ -243,7 +296,7 @@ local function lerp_teleport(start_pos, start_vel)
 
 		-- in my testing, lerp from positions takes roughly 0.03 seconds
 		-- which means we need to fake our velocity for a tiny bit
-		if total_frame_time < 0.03 then
+		if total_frame_time < bridge_seconds and not (transition and transition.acknowledged) then
 			start_pos:Add(ply:GetVelocity() * frame_time)
 			pos:Set(start_pos)
 		elseif !SeamlessPortals.DrawPlayerInView then
@@ -251,9 +304,13 @@ local function lerp_teleport(start_pos, start_vel)
 			hook.Remove("GetMotionBlurValues", "seamless_portals_lerp_teleport")
 		end
 
-		ply:SetFlashlightColor(Color(0, 0, 0)) -- yeahh..
-		if flashlight then flashlight:Remove() end
-		flashlight = get_flashlight(pos, ang)
+		if not saved_flashlight_color then
+			local color = ply:GetFlashlightColor()
+			saved_flashlight_color = Color(color.r, color.g, color.b, color.a)
+			flashlight_owner = ply
+		end
+		ply:SetFlashlightColor(Color(0, 0, 0))
+		flashlight = get_flashlight(pos, ang, "transition")
 		if flashlight then flashlight:Update() end
 
 		weapon_pos:Set(pos)
@@ -262,6 +319,7 @@ local function lerp_teleport(start_pos, start_vel)
 	end)
 
 	hook.Add("CalcViewModelView", "seamless_portals_lerp_teleport", function(_, _, old_pos, _, pos, ang)
+		if revision ~= transition_revision or not IsValid(ply) then return end
 		--pos:Sub(old_pos)
 		--pos:Add(weapon_pos)
 		pos:Set(weapon_pos)
@@ -275,14 +333,16 @@ local function lerp_teleport(start_pos, start_vel)
 end
 
 hook.Add("Move", "seamless_portal_teleport", function(ply, mv)
+	if SeamlessPortals.RecordMovement then SeamlessPortals.RecordMovement(ply, mv, "input") end
 	if !SeamlessPortals or #SeamlessPortals.Portals < 1 then
 		validate_hull(ply)
 		return
 	end
 
-	local ply_eyepos = ply:EyePos() -- base off eyepos, feels more accurate
+	SeamlessPortals.ApplyFunneling(ply,mv,engine.TickInterval())
+	local ply_eyepos = mv:GetOrigin() + ply:GetCurrentViewOffset() -- predicted origin, not a stale entity pose
 	local ply_vel = mv:GetVelocity()
-	local ply_vel_offset = ply_vel * FrameTime()
+	local ply_vel_offset = ply_vel * engine.TickInterval()
 
 	-- update_hull will return true if we might need to do a ground extrusion
 	local ply_pos = mv:GetOrigin()
@@ -301,10 +361,10 @@ hook.Add("Move", "seamless_portal_teleport", function(ply, mv)
 	if !tr.Hit then return end
 
 	local portal = tr.Entity -- might be world, but IsValid will catch it
-	if !IsValid(portal) or portal:GetUp():Dot(ply_vel) >= 0 then return end -- not going into portal
+	if not SeamlessPortals.IsPortal(portal) or portal:GetUp():Dot(ply_vel) >= 0 then return end -- not going into portal
 
 	local exit_portal = portal:GetExitPortal()
-	if !IsValid(exit_portal) then return end
+	if not SeamlessPortals.LinkAllows(portal, exit_portal, "players") then return end
 
 	local hit_pos = portal_trace_data.endpos
 	if too_fast(ply_vel) then
@@ -312,8 +372,7 @@ hook.Add("Move", "seamless_portal_teleport", function(ply, mv)
 	end
 
 	local new_ply_eyepos, new_ply_ang = SeamlessPortals.TransformPortal(portal, exit_portal, hit_pos, ply:EyeAngles())
-	local _, new_ply_vel = SeamlessPortals.TransformPortal(portal, exit_portal, nil, ply_vel:Angle())
-	new_ply_vel = new_ply_vel:Forward()
+	local new_ply_vel = SeamlessPortals.TransformDirection(portal, exit_portal, ply_vel, false):GetNormalized()
 	new_ply_vel:Mul(math.max(
 		ply_vel:Length(),
 		exit_portal:GetUp():Dot(-physenv.GetGravity() / 2) -- minimum velocity (to prevent fast in/out movement)
@@ -326,43 +385,73 @@ hook.Add("Move", "seamless_portal_teleport", function(ply, mv)
 	new_ply_pos:Negate()
 	new_ply_pos:Add(new_ply_eyepos)
 
-	if CLIENT then
-		if IsFirstTimePredicted() then
-			ply:SetEyeAngles(new_ply_ang)
-			lerp_teleport(new_ply_eyepos, new_ply_vel)
-
-			-- mirror dimension
-			if portal == exit_portal then
-				SeamlessPortals.ToggleMirror(!SeamlessPortals.ToggleMirror())
-			end
-		end
-	else
-		if game.SinglePlayer() then
-			ply:SetEyeAngles(new_ply_ang)
-
-			-- singleplayer sucks. Network everything over
-			net.Start("SEAMLESS_PORTALS_FIX_SINGLEPLAYER")
-			net.WriteVector(new_ply_eyepos)
-			net.WriteVector(new_ply_vel)
-			net.WriteBool(portal == exit_portal)
-			net.Send(ply)
-		end
-
-		-- shrinkinator (most popular resizing mod- change if there is a better one)
-		ply:SetNWInt("desired_size", ply:GetNWInt("desired_size", 100) * ratio)
-
-		portal:TriggerOutput("OnTeleportFrom", ply)
-		exit_portal:TriggerOutput("OnTeleportTo", ply)
-
-		ply:DropObject()
-	end
-
-	-- incase we get stuck
-	update_hull(ply, new_ply_pos)
-	extrude_player(ply, new_ply_pos)
-	mv:SetOrigin(new_ply_pos)
-	mv:SetVelocity(new_ply_vel)
-	ply:SetGroundEntity(nil)
+    -- Compute destination extrusion BEFORE moving the held assembly, so all
+    -- objects receive the same player-space displacement.
+    update_hull(ply, new_ply_pos)
+    extrude_player(ply, new_ply_pos)
+    new_ply_eyepos = new_ply_pos + ply:GetCurrentViewOffset()
+    local hold = SeamlessPortals.GetHeldRecord(ply)
+    local transport
+    if hold then
+        if not SeamlessPortals.SupportsPropTraversal(portal, exit_portal) then
+            return SeamlessPortals.BlockHeldTraversal(ply,mv,portal,"held_props_disabled_or_mirror")
+        end
+        if SERVER then
+            local reason
+            transport, reason = SeamlessPortals.PlanTransport(hold.entity,portal,exit_portal,ply,ply_eyepos,new_ply_eyepos)
+            if not transport then return SeamlessPortals.BlockHeldTraversal(ply,mv,portal,reason) end
+            new_ply_pos:Add(transport.offset)
+            new_ply_eyepos:Add(transport.offset)
+            local ok
+            ok, reason = SeamlessPortals.CommitTransport(transport)
+            if not ok then return SeamlessPortals.BlockHeldTraversal(ply,mv,portal,reason) end
+        end
+    end
+    -- Preserve the native grab controller. No DropObject, ForcePlayerDrop,
+    -- PickupObject, recreated original PhysObj, or permission bypass is used.
+    mv:SetOrigin(new_ply_pos)
+    mv:SetVelocity(new_ply_vel)
+    ply:SetGroundEntity(nil)
+    if CLIENT then
+        if IsFirstTimePredicted() then
+            ply:SetEyeAngles(new_ply_ang)
+            local cmd=ply:GetCurrentCommand()
+            local transition={entry=portal,exit=exit_portal,command=cmd and cmd:CommandNumber() or 0,time=RealTime()}
+            SeamlessPortals.PendingTransition=transition
+            lerp_teleport(new_ply_eyepos,new_ply_vel,transition)
+            if portal == exit_portal then SeamlessPortals.ToggleMirror(not SeamlessPortals.ToggleMirror()) end
+        end
+    else
+        -- The native physgun target uses player view space: update it on the
+        -- authoritative server too, rather than only in singleplayer.
+        ply:SetEyeAngles(new_ply_ang)
+        if game.SinglePlayer() then
+            net.Start("SEAMLESS_PORTALS_FIX_SINGLEPLAYER")
+            net.WriteVector(new_ply_eyepos) net.WriteVector(new_ply_vel)
+            net.WriteBool(portal == exit_portal)
+            net.Send(ply)
+        end
+        ply:SetNWInt("desired_size",ply:GetNWInt("desired_size",100)*ratio)
+        if not game.SinglePlayer() then
+            ply.SEAMLESS_PORTALS_ACK_SEQUENCE=(ply.SEAMLESS_PORTALS_ACK_SEQUENCE or 0)+1
+            if portal==exit_portal then ply.SEAMLESS_PORTALS_MIRRORED=not ply.SEAMLESS_PORTALS_MIRRORED end
+            local cmd=ply:GetCurrentCommand()
+            net.Start("SEAMLESS_PORTALS_TRANSITION_ACK_V2")
+            net.WriteUInt(ply.SEAMLESS_PORTALS_ACK_SEQUENCE % 4294967296,32)
+            net.WriteUInt(cmd and cmd:CommandNumber() or 0,32)
+            net.WriteEntity(portal) net.WriteEntity(exit_portal)
+            net.WriteVector(new_ply_eyepos) net.WriteVector(new_ply_vel) net.WriteAngle(new_ply_ang)
+            net.WriteBool(ply.SEAMLESS_PORTALS_MIRRORED or false)
+            net.Send(ply)
+        end
+        if transport then
+            if SeamlessPortals.FinishHeldTraversal then SeamlessPortals.FinishHeldTraversal(ply,hold) end
+            SeamlessPortals.AuditHeldTransport(ply,hold,transport)
+            SeamlessPortals.NotifyTransport(transport,"held_"..hold.kind)
+        end
+        SeamlessPortals.NotifyTraversal(ply,portal,exit_portal,"player")
+    end
+    if SeamlessPortals.RecordMovement then SeamlessPortals.RecordMovement(ply,mv,"teleported") end
 
 	return true
 end)
@@ -380,4 +469,47 @@ if game.SinglePlayer() then
 			end
 		end)
 	end
+end
+
+SeamlessPortals.RestorePlayerHull = validate_hull
+for _, event in ipairs({"PlayerDeath", "PlayerSilentDeath", "PlayerSpawn"}) do
+    hook.Add(event, "seamless_portals_restore_hull", function(ply)
+        if IsValid(ply) then validate_hull(ply) end
+    end)
+end
+hook.Add("ShutDown", "seamless_portals_restore_hulls", function()
+    for _, ply in ipairs(player.GetAll()) do validate_hull(ply) end
+end)
+
+if CLIENT then
+    hook.Add("ShutDown", "seamless_portals_restore_flashlight", restore_flashlight_color)
+end
+
+-- Acknowledgment is cosmetic reconciliation, not client authority over teleporting.
+if SERVER then
+    util.AddNetworkString("SEAMLESS_PORTALS_TRANSITION_ACK_V2")
+else
+    local last_sequence=0
+    net.Receive("SEAMLESS_PORTALS_TRANSITION_ACK_V2",function()
+        local sequence,command=net.ReadUInt(32),net.ReadUInt(32)
+        local entry,exit=net.ReadEntity(),net.ReadEntity()
+        local eye,vel,ang=net.ReadVector(),net.ReadVector(),net.ReadAngle()
+        local mirrored=net.ReadBool()
+        if sequence<=last_sequence then return end
+        last_sequence=sequence
+        if not SeamlessPortals.FiniteVector(eye) or not SeamlessPortals.FiniteVector(vel) then return end
+        local pending=SeamlessPortals.PendingTransition
+        if pending and command>0 and pending.command>command then return end -- newer prediction owns the view
+        local matched=pending and pending.entry==entry and pending.exit==exit
+            and (command==0 or command==pending.command) and RealTime()-pending.time<1
+        if matched then
+            pending.acknowledged=true
+        else
+            local ply=LocalPlayer()
+            if IsValid(ply) then ply:SetEyeAngles(ang) end
+            lerp_teleport(eye,vel,{acknowledged=true})
+        end
+        SeamlessPortals.ToggleMirror(mirrored) -- absolute state, never a second blind toggle
+        SeamlessPortals.PendingTransition=nil
+    end)
 end

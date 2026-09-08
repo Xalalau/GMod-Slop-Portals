@@ -1,15 +1,9 @@
 include("sh_init.lua")
 
-local varDrawDistance = CreateClientConVar(
-	"seamless_portals_drawdistance",
-    "250",
-    true,
-    true,
-    "Sets the multiplier of how far a portal should render",
-    0
-)
+local varDrawDistance = SeamlessPortals.ClientConVars.drawdistance
 
 function ENT:Initialize()
+	self.SEAMLESS_PORTALS_GEOMETRY_DIRTY = true
 	table.insert(SeamlessPortals.Portals, self)
 end
 
@@ -24,8 +18,10 @@ local drawMat = Material("models/dav0r/hoverball")
 
 local render_matrix = Matrix()
 function ENT:GetRenderMesh()
+	local cached = SeamlessPortals.GetRenderMesh(self:GetSides())
+	if not cached then return nil end
 	return {
-		Mesh     = SeamlessPortals.GetRenderMesh(self:GetSides()),
+		Mesh     = cached,
 		Matrix   = render_matrix,
 		Material = drawMat
 	}
@@ -33,12 +29,14 @@ end
 
 function ENT:DrawModelMesh(portal_size, nudge_z)
 	local draw_mesh = SeamlessPortals.GetRenderMesh(self:GetSides())
+	if not draw_mesh then return end
 	local render_matrix = self:GetWorldTransformMatrix()
 	render_matrix:SetScale(portal_size)
 	if nudge_z then render_matrix:Translate(Vector(0, 0, (nudge_z - 1))) end
 	cam.PushModelMatrix(render_matrix)
-		draw_mesh:Draw()
+	local ok, err = xpcall(function() draw_mesh:Draw() end, debug.traceback)
 	cam.PopModelMatrix()
+	if not ok then error(err, 0) end
 end
 
 -- So the size is in source units (remember we are using sine/cosine)
@@ -47,7 +45,7 @@ local size_mult = Vector(math.sqrt(2) / 2, math.sqrt(2) / 2, 1)
 -- DrawModel inside of a non Draw hook will call Draw instead of DrawModel (thanks, gmod API)
 -- this check is so we can call DrawModel inside of DrawStenciled
 local draw_model = false
-function ENT:DrawStenciled(texture, flip, nudge_z)
+local function draw_stenciled(self, texture, flip, nudge_z)
 	draw_model = true
 
 	local portal_size = self:GetSize()
@@ -67,7 +65,26 @@ function ENT:DrawStenciled(texture, flip, nudge_z)
 		self:DrawModel()
 	end
 
-	-- frame flat face
+	-- F07: Backface is a backing-slab option, not visibility of an unlinked
+    -- aperture. Always show a front-plane outline while no view is available.
+    if backface_disabled and (not self.SEAMLESS_PORTALS_RENDERED or not SeamlessPortals.IsUsableLink(self,self:GetExitPortal())) then
+        local vertices=SeamlessPortals.ApertureVertices(self)
+        local color=Color(80,210,255,255)
+        for i,a in ipairs(vertices) do
+            local b=vertices[i % #vertices+1]
+            render.DrawLine(self:LocalToWorld(a+Vector(0,0,0.1)),self:LocalToWorld(b+Vector(0,0,0.1)),color,true)
+        end
+        -- Two crossing guide lines distinguish a waiting aperture from a live
+        -- portal. No opaque backface is added and depth occlusion is respected.
+        if #vertices>=4 then
+            for i=1,2 do
+                local j=i+math.floor(#vertices/2)
+                render.DrawLine(self:LocalToWorld(vertices[i]),self:LocalToWorld(vertices[j]),color,true)
+            end
+        end
+    end
+
+    -- frame flat face
 	if SeamlessPortals.Rendering or !self.SEAMLESS_PORTALS_RENDERED then
 		if !backface_disabled then
 			portal_size[3] = 0
@@ -106,6 +123,16 @@ function ENT:DrawStenciled(texture, flip, nudge_z)
 	draw_model = false
 end
 
+
+function ENT:DrawStenciled(texture, flip, nudge_z)
+    local ok, err = xpcall(function() draw_stenciled(self, texture, flip, nudge_z) end, debug.traceback)
+    draw_model = false
+    -- This renderer owns stencil/cull state for the duration of its pass.
+    render.SetStencilEnable(false)
+    render.CullMode(MATERIAL_CULLMODE_CCW)
+    if not ok then error(err, 0) end
+end
+
 function ENT:Draw(flags)
 	if bit.band(flags, STUDIO_SHADOWDEPTHTEXTURE) > 0 then return end -- portal should not cast shadows
 
@@ -121,6 +148,7 @@ function ENT:Draw(flags)
 end
 
 function ENT:Think()
+	if not self:ReconcileGeometry() then return end
 	local phys = self:GetPhysicsObject()
 	if IsValid(phys) then
 		phys:EnableMotion(false)
@@ -136,8 +164,8 @@ function ENT:TestCollision(startpos, delta, isbox, extents, mask)
 	-- probably flashlight
 	if (mask == 33570947 or mask == 33570827) and extents == flashlight_extents then return false end
 
-	-- Hacky bullet fix for singleplayer
-	if game.SinglePlayer() and mask == 1174421507 then return false end
+    -- C04 handles real pellet impacts in both realms; do not make portals
+    -- transparent to client bullets only in singleplayer.
 
 	return true
 end
@@ -149,8 +177,22 @@ end
 
 -- Create meshes used for the portals
 -- They can have a dynamic amount of sides
-SeamlessPortals.PortalMeshes = {}
+SeamlessPortals.PortalMeshes = SeamlessPortals.PortalMeshes or {}
+local function destroy_portal_meshes()
+	for sides, cached in pairs(SeamlessPortals.PortalMeshes) do
+		cached:Destroy()
+		SeamlessPortals.PortalMeshes[sides] = nil
+	end
+end
+hook.Add("ShutDown", "seamless_portals_destroy_meshes", destroy_portal_meshes)
+-- Bump this when topology changes; clear only outside an active portal render.
+local mesh_version = 1
+if SeamlessPortals.PortalMeshVersion ~= mesh_version and not SeamlessPortals.Rendering then
+	destroy_portal_meshes()
+	SeamlessPortals.PortalMeshVersion = mesh_version
+end
 SeamlessPortals.GetRenderMesh = function(sides)
+	if not SeamlessPortals.ValidateSides(sides) then return nil end
 	if !SeamlessPortals.PortalMeshes[sides] then
 		SeamlessPortals.PortalMeshes[sides] = Mesh()
 		local ang_mul = 360 / sides

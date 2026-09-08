@@ -1,0 +1,64 @@
+-- Run manually on a DEVELOPMENT server/client after applying the complete series.
+-- This inherited smoke list does NOT cover every F00-F10 field-fix module.
+-- Server: lua_openscript seamless_portals/tests/smoke.lua
+-- Client: lua_openscript_cl seamless_portals/tests/smoke.lua
+-- Compiles addon-owned files without executing their registration side effects.
+local paths = {
+    "autorun/000_seamless_portals_core.lua",
+    "autorun/client/cl_render_core.lua",
+    "autorun/server/sv_portals_pvs.lua",
+    "autorun/sh_detours.lua",
+    "autorun/sh_player_teleport.lua",
+    "autorun/sh_seamless_diagnostics.lua",
+    "cl_portal_flashlight.lua",
+    "entities/seamless_portal/cl_init.lua",
+    "entities/seamless_portal/init.lua",
+    "entities/seamless_portal/sh_init.lua",
+    "entities/seamless_portal_clone.lua",
+    "entities/seamless_portal_cutout.lua",
+    "seamless_portals/aperture.lua",
+    "seamless_portals/bullets.lua",
+    "seamless_portals/client_config.lua",
+    "seamless_portals/core.lua",
+    "seamless_portals/custom_defaults.lua",
+    "seamless_portals/features.lua",
+    "seamless_portals/funneling.lua",
+    "seamless_portals/holding.lua",
+    "seamless_portals/skybox.lua",
+    "seamless_portals/sound.lua",
+    "seamless_portals/tests/smoke.lua",
+    "seamless_portals/tool_features.lua",
+    "seamless_portals/traces.lua",
+    "seamless_portals/transport.lua",
+    "weapons/gmod_tool/stools/portal_behavior_tool.lua",
+    "weapons/gmod_tool/stools/portal_creator_tool.lua",
+    "weapons/gmod_tool/stools/portal_fitter_tool.lua",
+    "weapons/gmod_tool/stools/portal_resizer_tool.lua",
+    "weapons/portal_gun.lua",
+}
+local server_only = {
+    ["autorun/server/sv_portals_pvs.lua"] = true,
+    ["entities/seamless_portal/init.lua"] = true,
+    ["entities/seamless_portal_cutout.lua"] = true,
+    ["seamless_portals/transport.lua"] = true
+}
+for _, path in ipairs(paths) do
+    if SERVER or not server_only[path] then
+        local source = file.Read(path, "LUA")
+        assert(source, "Missing source in this realm: " .. path)
+        local compiled = CompileString(source, "@" .. path, false)
+        assert(isfunction(compiled), tostring(compiled))
+    end
+end
+local SP = SeamlessPortals
+assert(SP.ValidateSides(3) and SP.ValidateSides(100))
+assert(not SP.ValidateSides(0) and not SP.ValidateSides(3.5) and not SP.ValidateSides(math.huge))
+assert(SP.ValidateSize(Vector(100, 100, 8)) and not SP.ValidateSize(Vector(0, 100, 8)))
+assert(SP.AspectCompatibleSize(Vector(100, 50, 8), Vector(200, 100, 8)))
+assert(not SP.AspectCompatibleSize(Vector(100, 50, 8), Vector(100, 100, 8)))
+assert(SP.PatchSeriesCount == 94 and SP.CustomProposalCount == 15)
+for _, name in ipairs({"FeatureEnabled", "InAperture", "TracePortalLine", "PortalBulletCallback", "GetHeldRecord", "ApplyFunneling"}) do
+    assert(isfunction(SP[name]), "Missing inherited RC2 API: " .. name)
+end
+if SERVER then assert(isfunction(SP.PlanTransport) and isfunction(SP.CommitTransport)) end
+print("[Seamless Portals] Native GLua compile + pure smoke checks passed. Gameplay/rendering not tested.")

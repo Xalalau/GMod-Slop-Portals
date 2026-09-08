@@ -75,7 +75,8 @@ local function trace_local(self, start_pos, end_pos)
 	local tr_table = {
         start = self:LocalToWorld(start_pos),
         endpos = self:LocalToWorld(end_pos),
-        mask = 131083, -- world only
+        mask = MASK_SOLID_BRUSHONLY,
+        filter = function() return false end, -- exclude entities; world is traced separately
     }
 
     local tr = SeamlessPortals.TraceLine(tr_table)
@@ -96,6 +97,8 @@ function ENT:GetPortal()
 end
 
 function ENT:Initialize()
+	self.ENTITIES, self.VERTICES, self.PROXIES = {}, {}, {}
+	self.SEAMLESS_PORTALS_READY = false
     self:SetCollisionGroup(COLLISION_GROUP_PASSABLE_DOOR) -- props only
     self:SetTrigger(true)
 end
@@ -104,12 +107,13 @@ end
 function ENT:GeneratePhysmesh(portal, exit_portal)
 	local size = portal:GetSize()
 	local offset = size / 2
+	local aperture_min, aperture_max = SeamlessPortals.GetApertureBounds(size, portal:GetSides())
 
 	if exit_portal then self.VERTICES = {} end
 	local vertices = {}
 
 	local function pos_local(x, y, z)
-		return Vector(x * size[1] - offset[1], y * size[2] - offset[2], z - size[3])
+		return Vector(Lerp(x, aperture_min.x, aperture_max.x), Lerp(y, aperture_min.y, aperture_max.y), z - size[3])
 	end
 
 	local inset = -2
@@ -146,7 +150,8 @@ function ENT:GeneratePhysmesh(portal, exit_portal)
 		local tr = SeamlessPortals.TraceLine({
 			start = portal:LocalToWorld(start_pos),
 			endpos = portal:LocalToWorld(end_pos),
-			mask = 131083, -- world only
+			mask = MASK_SOLID_BRUSHONLY,
+        filter = function() return false end, -- exclude entities; world is traced separately
 		})
 
 		if !tr.Hit then return nil end
@@ -154,8 +159,8 @@ function ENT:GeneratePhysmesh(portal, exit_portal)
 		tr.HitAngle = portal:WorldToLocalAngles(tr.HitNormal:Angle())
 		tr.HitPos = portal:WorldToLocal(tr.HitPos)
 
-		local right = tr.HitAngle:Right() * size[1] * 1.5
-		local front = tr.HitAngle:Up() * size[1] * 1.5
+		local right = tr.HitAngle:Right() * math.max(size[1], size[2]) * 1.5
+		local front = tr.HitAngle:Up() * math.max(size[1], size[2]) * 1.5
 		generate_quad(tr.HitPos - front + right, tr.HitPos + front + right, tr.HitPos - front - right, tr.HitPos + front - right)
 	end
 
@@ -181,6 +186,39 @@ function ENT:GeneratePhysmesh(portal, exit_portal)
 	if #vertices <= 0 then return end
 
 	vertices = cut_concave(vertices, vector_origin, Vector(0, 0, 1))
+    -- Without surrounding world surfaces a rectangular cutout previously became
+    -- empty, so admission was permanently disabled. Build only the outside rim.
+    local aperture = SeamlessPortals.ApertureVertices(portal)
+    for i,a in ipairs(aperture) do
+        local b=aperture[i % #aperture+1]
+        local edge=b-a
+        local outward=Vector(-edge.y,edge.x,0):GetNormalized()*1.5
+        local top={a,b,b+outward,a+outward}
+        local down=Vector(0,0,-math.max(size.z,1))
+        for j=2,3 do
+            generate_tri(top[1],top[j+1],top[j])
+            generate_tri(top[1]+down,top[j]+down,top[j+1]+down)
+        end
+        for j,p in ipairs(top) do
+            local q=top[j % 4+1]
+            generate_tri(p,q,p+down)
+            generate_tri(q,q+down,p+down)
+        end
+    end
+
+    -- Close the corners of the bounding rectangle with actual polygon borders.
+    -- These prisms replace the rectangular-only restriction, including gun portals.
+    for _, poly in ipairs(SeamlessPortals.ApertureBorderPieces(portal)) do
+        local depth = Vector(0, 0, -size.z - 2)
+        for i = 2, #poly - 1 do
+            generate_tri(poly[1], poly[i+1], poly[i])
+            generate_tri(poly[1]+depth, poly[i]+depth, poly[i+1]+depth)
+        end
+        for i, a in ipairs(poly) do
+            local b = poly[i % #poly + 1]
+            generate_quad(a, b, a+depth, b+depth)
+        end
+    end
 	if exit_portal then -- invert cut
 		local ratio = exit_portal:GetSize()[1] / portal:GetSize()[1]
 		local negated_verts = {}
@@ -232,10 +270,23 @@ function ENT:GeneratePhysmesh(portal, exit_portal)
 end
 
 function ENT:CreatePhysmesh()
+	local clean = {}
+	for i = 1, #self.VERTICES - 2, 3 do
+		local a, b, c = self.VERTICES[i], self.VERTICES[i + 1], self.VERTICES[i + 2]
+		local finite = true
+		for _, v in ipairs({a, b, c}) do
+			for axis = 1, 3 do if not SeamlessPortals.IsFinite(v[axis]) then finite = false end end
+		end
+		if finite and (b - a):Cross(c - a):LengthSqr() > 1e-8 then
+			clean[#clean + 1], clean[#clean + 2], clean[#clean + 3] = a, b, c
+		end
+	end
+	if #clean == 0 or #clean > 24000 then return false end
+	self.VERTICES = clean
 	self:SetSolid(SOLID_VPHYSICS)
 	self:SetMoveType(MOVETYPE_NONE)
-	self:PhysicsDestroy()
-	self:PhysicsFromMesh(self.VERTICES)
+	if #self.VERTICES < 3 or #self.VERTICES % 3 ~= 0 then return false end
+	if not self:PhysicsFromMesh(self.VERTICES) then return false end
 	self:EnableCustomCollisions(true)
 
 	local phys = self:GetPhysicsObject()
@@ -243,132 +294,233 @@ function ENT:CreatePhysmesh()
 		phys:EnableMotion(false)
 		phys:SetPos(self:GetPos())
 		phys:SetAngles(self:GetAngles())
+		return true
 	end
+	return false
 end
 
 local allowed_classes = {
 	["prop_physics"] = true,
 	["prop_vehicle_airboat"] = true,
 	["prop_vehicle_prisoner_pod"] = true,
-	["prop_combine_ball"] = true,
+	-- Native projectiles have a separate swept crossing adapter (F06).
+    ["prop_physics_multiplayer"] = true,
 }
 
 function ENT:Think()
-	local portal = self:GetPortal()
-	local size = portal:GetSize()
-	size[1] = size[1] / 2
-	size[2] = size[2] / 2
-
-	local mins, maxs = self:GetRotatedAABB(-size, Vector(size[1], size[2]))
-	local self_pos = self:GetPos()
-	mins:Add(self_pos)
-	maxs:Add(self_pos)
-
-	--debugoverlay.Box(Vector(), mins, maxs, 1/3, Color(0, 255, 0, 0))
-	--debugoverlay.BoxAngles(self_pos, -size, Vector(size[1], size[2], 0), self:GetAngles(), 1/3, Color(255, 0, 255, 0))
-
-	-- Add entities to cutout
-	local old_ents = table.Copy(self.ENTITIES)
-    local valid_ents = ents.FindInBox(mins, maxs)
-    local self_forward = self:GetForward()
-    local self_right = self:GetRight()
-    local self_up = self:GetUp()
-    local max_bounding = portal:BoundingRadius() * 4
-	for _, ent in ipairs(valid_ents) do
-		if !allowed_classes[ent:GetClass()] then continue end
-		if ent:BoundingRadius() > max_bounding then continue end
-
-		-- if already added, don't bother with checks
-		if old_ents[ent] then
-			old_ents[ent] = nil
-			continue
-		end
-
-		-- trim out entities not infront of portal
-		if ent:GetVelocity():Dot(self_up) >= 0 then continue end
-		local ent_pos = ent:GetPos() ent_pos:Sub(self_pos)
-		local ent_dot_forward = math.abs(ent_pos:Dot(self_forward))
-		if ent_dot_forward > size[1] then continue end
-		local ent_dot_right = math.abs(ent_pos:Dot(self_right))
-		if ent_dot_right > size[2] then continue end
-		local ent_dot_up = ent_pos:Dot(self_up)
-		if ent_dot_up < -size[3] then continue end
-
-		self:AddEntity(ent)
-		constraint.RemoveAll(ent) -- yeah. not even gonna try
-		old_ents[ent] = nil
-	end
-
-	for ent, _ in pairs(old_ents) do
-		-- if we're behind portal, don't remove (teleport code will hopefully remove us at some point..)
-		if IsValid(ent) and (ent:GetPos() - portal:GetPos()):Dot(portal:GetUp()) < 0 then
-			continue
-		end
-
-		self:RemoveEntity(ent)
-	end
-
+    local SP=SeamlessPortals
+    local portal=self:GetPortal()
+    if not SP.IsPortal(portal) or not self.SEAMLESS_PORTALS_READY then return end
+    if not SP.SameGeometry(self.SEAMLESS_PORTALS_GEOMETRY,SP.CaptureGeometry(portal)) then self:Deactivate() return end
+    local lo,hi=SP.GetApertureBounds(portal:GetSize(),portal:GetSides())
+    lo=Vector(lo.x-128,lo.y-128,-portal:GetSize().z-128)
+    hi=Vector(hi.x+128,hi.y+128,128)
+    local mins,maxs=self:GetRotatedAABB(lo,hi)
+    mins:Add(self:GetPos()) maxs:Add(self:GetPos())
+    local candidates={}
+    for _,ent in ipairs(ents.FindInBox(mins,maxs)) do candidates[ent]=true end
+    -- Retained handles may be far behind a thin portal. They are not discarded
+    -- just because their entity origin left its decorative slab.
+    for ent in pairs(self.ENTITIES) do candidates[ent]=true end
+    local release={}
+    self.SEAMLESS_PORTALS_TRACK=self.SEAMLESS_PORTALS_TRACK or {}
+    for ent in pairs(candidates) do
+        if not SP.IsLiveEntity(ent) then
+            release[#release+1]=ent
+        elseif allowed_classes[ent:GetClass()] then
+            local phys=ent:GetPhysicsObject()
+            local fp=SP.PortalOBB(portal,ent)
+            local kept=SP.CarryKeepsAdmission and SP.CarryKeepsAdmission(ent,portal)
+            local velocity=IsValid(phys) and phys:GetVelocity() or vector_origin
+            local lead=math.min(128,8+velocity:Length()*engine.TickInterval())
+            local near=fp.overlap and fp.lo.z<=lead and fp.hi.z>=-portal:GetSize().z-32
+            local track=self.SEAMLESS_PORTALS_TRACK[ent]
+            if self.ENTITIES[ent] then
+                if kept or near then
+                    self.SEAMLESS_PORTALS_TRACK[ent]=track or {front_seen=true}
+                    self.SEAMLESS_PORTALS_TRACK[ent].misses=0
+                else
+                    track=track or {front_seen=true,misses=0}
+                    track.misses=(track.misses or 0)+1
+                    self.SEAMLESS_PORTALS_TRACK[ent]=track
+                    if track.misses>=2 then release[#release+1]=ent end
+                end
+            elseif near and fp.hi.z>=0 and (kept or velocity:Dot(portal:GetUp())<0) then
+                if self:AddEntity(ent) then self.SEAMLESS_PORTALS_TRACK[ent]={front_seen=true,misses=0} end
+            end
+        end
+    end
+    for _,ent in ipairs(release) do self:RemoveEntity(ent) end
     self:NextThink(CurTime())
     return true
 end
 
-local logic_collision_pair = ents.Create("logic_collision_pair")
-logic_collision_pair:Spawn()
+
+local logic_collision_pair
+local function get_collision_pair()
+    if SeamlessPortals.IsLiveEntity(logic_collision_pair) then return logic_collision_pair end
+    local helper = ents.Create("logic_collision_pair")
+    if not SeamlessPortals.IsLiveEntity(helper) then return nil end
+    helper:Spawn()
+    if not SeamlessPortals.IsLiveEntity(helper) then return nil end
+    logic_collision_pair = helper
+    return helper
+end
+hook.Add("PostCleanupMap", "seamless_portals_collision_helper", function()
+    logic_collision_pair = nil -- recreated only when a collision operation needs it
+end)
+hook.Add("ShutDown", "seamless_portals_collision_helper", function()
+    SafeRemoveEntity(logic_collision_pair)
+    logic_collision_pair = nil
+end)
+
 local function set_collision(ent, ent2, enable)
-	if !IsValid(ent) then return end
+	if not IsValid(ent) or (not IsValid(ent2) and ent2 ~= game.GetWorld()) then return false end
+	local helper = get_collision_pair()
+	if not helper then return false end
 
 	local ent_phys = ent:GetPhysicsObject()
 	local ent2_phys = ent2:GetPhysicsObject()
-	if !IsValid(ent_phys) or !IsValid(ent2_phys) then return end
+	if not IsValid(ent_phys) or not IsValid(ent2_phys) then return false end
 
-	logic_collision_pair:SetPhysConstraintObjects(ent_phys, ent2_phys)
-	logic_collision_pair:Activate()
-	logic_collision_pair:Input(enable and "EnableCollisions" or "DisableCollisions")
+	helper:SetPhysConstraintObjects(ent_phys, ent2_phys)
+	helper:Activate()
+	helper:Input(enable and "EnableCollisions" or "DisableCollisions")
 
 	if IsValid(ent_phys) then
 		ent_phys:RecheckCollisionFilter()
 	end
+	return true
+end
+
+SeamlessPortals.SetCollisionPair = set_collision
+
+-- A failed restoration is retried independently of the removed cutout's lifetime.
+-- This is best-effort recovery, not an observation of native collision state.
+local restore_pending = setmetatable({}, {__mode = "k"})
+local function restore_world_collision(ent)
+    if not IsValid(ent) then restore_pending[ent] = nil return false end
+    if set_collision(ent, game.GetWorld(), true) then
+        restore_pending[ent] = nil
+        return true
+    end
+    restore_pending[ent] = true
+    return false
+end
+hook.Add("Think", "seamless_portals_restore_collision", function()
+    for ent in pairs(restore_pending) do
+        if not IsValid(ent) or ent.SEAMLESS_PORTALS_CUTOUT ~= nil then
+            restore_pending[ent] = nil
+        else
+            restore_world_collision(ent)
+        end
+    end
+end)
+
+-- Proxy ownership is separate from source ownership. A proxy must never enter
+-- the ordinary teleport loop as if it were another real prop.
+function ENT:AddProxy(clone)
+    if not self.SEAMLESS_PORTALS_READY or not IsValid(clone) then return false end
+    self.PROXIES=self.PROXIES or {}
+    if self.PROXIES[clone] then return true end
+    if not set_collision(clone,self,true) then return false end
+    if not set_collision(clone,game.GetWorld(),false) then set_collision(clone,self,false) return false end
+    self.PROXIES[clone]=true
+    clone.SEAMLESS_PORTALS_PROXY_CUTOUT=self
+    return true
+end
+function ENT:RemoveProxy(clone)
+    if self.PROXIES then self.PROXIES[clone]=nil end
+    if not IsValid(clone) or clone.SEAMLESS_PORTALS_PROXY_CUTOUT~=self then return end
+    clone.SEAMLESS_PORTALS_PROXY_CUTOUT=nil
+    set_collision(clone,self,false)
+    restore_world_collision(clone)
 end
 
 function ENT:AddEntity(ent)
-	if self.ENTITIES[ent] then return end
-	if ent.SEAMLESS_PORTALS_CUTOUT then return end
+    if not SeamlessPortals.IsLiveEntity(self) or not SeamlessPortals.IsLiveEntity(ent)
+        or not self.SEAMLESS_PORTALS_READY or self.SEAMLESS_PORTALS_DEACTIVATING then return false end
+	if self.ENTITIES[ent] then return ent.SEAMLESS_PORTALS_CUTOUT == self end
+	if ent.SEAMLESS_PORTALS_CUTOUT then return false end
+	if constraint.HasConstraints(ent) and SeamlessPortals.CollectTransportGroup then
+        local group = SeamlessPortals.CollectTransportGroup(ent, SeamlessPortals.HeldBy and SeamlessPortals.HeldBy(ent), true)
+        if not group then return false end
+    end
 
-	self.ENTITIES[ent] = true
-	ent.SEAMLESS_PORTALS_CUTOUT = self
-	set_collision(ent, game.GetWorld(), false)
-	set_collision(ent, self, true)
+
+    if not IsValid(ent:GetPhysicsObject()) or not IsValid(self:GetPhysicsObject()) then return false end
+    if not set_collision(ent, self, true) then return false end
+    if not set_collision(ent, game.GetWorld(), false) then
+        set_collision(ent, self, false)
+        restore_world_collision(ent)
+        return false
+    end
+    restore_pending[ent] = nil
+    self.ENTITIES[ent] = true
+    ent.SEAMLESS_PORTALS_CUTOUT = self
+    if ent.SetNWEntity then ent:SetNWEntity("seamless_portals_clip_entry",self:GetPortal()) end
+    return true
 end
 
 function ENT:RemoveEntity(ent, keep_clone)
-	if IsValid(ent) and ent.SEAMLESS_PORTALS_CUTOUT != self then return end
-	if !keep_clone then SafeRemoveEntity(ent.SEAMLESS_PORTALS_CLONE) end
+    self.ENTITIES[ent] = nil
+    if self.SEAMLESS_PORTALS_TRACK then self.SEAMLESS_PORTALS_TRACK[ent]=nil end
+    if not IsValid(ent) then return end
+    if ent.SEAMLESS_PORTALS_CUTOUT ~= self then return end
+    if not keep_clone then
+        local clone = ent.SEAMLESS_PORTALS_CLONE
+        ent.SEAMLESS_PORTALS_CLONE = nil
+        SafeRemoveEntity(clone)
+    end
+    ent.SEAMLESS_PORTALS_CUTOUT = nil
+    if ent.SetNWEntity then ent:SetNWEntity("seamless_portals_clip_entry",NULL) end
+    set_collision(ent, self, false)
+    restore_world_collision(ent)
+end
 
-	self.ENTITIES[ent] = nil
-	ent.SEAMLESS_PORTALS_CUTOUT = nil
-	set_collision(ent, self, false)
-	set_collision(ent, game.GetWorld(), true)
+-- Idempotent: cleanup can run before Remove(), on invalidation and in OnRemove().
+function ENT:Deactivate()
+    if self.SEAMLESS_PORTALS_DEACTIVATING then return end
+    self.SEAMLESS_PORTALS_DEACTIVATING = true
+    self.SEAMLESS_PORTALS_READY = false
+    local records={}
+    for ent in pairs(self.ENTITIES or {}) do
+        local record=IsValid(ent) and ent.SEAMLESS_PORTALS_CARRY
+        if record and not records[record] then
+            records[record]=true
+            if SeamlessPortals.RestoreCarryFront then SeamlessPortals.RestoreCarryFront(record) end
+            if SeamlessPortals.ClearCarryState then SeamlessPortals.ClearCarryState(record) end
+        end
+        self:RemoveEntity(ent)
+    end
+    for clone in pairs(self.PROXIES or {}) do self:RemoveProxy(clone) end
 end
 
 function ENT:PhysicsCollide(data)
-	local ent = data.HitEntity
-	if self.ENTITIES[ent] then return end
-
-	set_collision(ent, self, false)
-
-	-- we collided already, force recheck collision filters and undo collision
-	local phys = data.HitObject
-	if IsValid(data.HitObject) and phys:IsMotionEnabled() then
-		phys:EnableMotion(false)
-		phys:EnableMotion(true)
-		phys:SetVelocity(data.TheirOldVelocity)
-		phys:SetAngleVelocity(data.TheirOldAngularVelocity)
-	end
+    local ent=data.HitEntity
+    if self.ENTITIES[ent] or (self.PROXIES and self.PROXIES[ent]) then return end
+    -- Changing collision filters/freezing within VPhysics callbacks is unsafe.
+    -- Defer the filter update, and never detach a native held controller.
+    local velocity=data.TheirOldVelocity and Vector(data.TheirOldVelocity)
+    local angular=data.TheirOldAngularVelocity and Vector(data.TheirOldAngularVelocity)
+    timer.Simple(0,function()
+        if not IsValid(self) or not IsValid(ent) or self.ENTITIES[ent]
+            or (self.PROXIES and self.PROXIES[ent]) then return end
+        set_collision(ent,self,false)
+        local phys=ent:GetPhysicsObject()
+        if IsValid(phys) then
+            phys:RecheckCollisionFilter()
+            if not ent:IsPlayerHolding() and phys:IsMotionEnabled() then
+                if velocity then phys:SetVelocity(velocity) end
+                if angular then phys:SetAngleVelocity(angular) end
+            end
+        end
+    end)
 end
 
 function ENT:StartTouch(ent)
 	timer.Simple(0, function() -- will crash without this!
-		self:PhysicsCollide({HitEntity = ent})
+		if IsValid(self) and IsValid(ent) and self.SEAMLESS_PORTALS_READY then self:PhysicsCollide({HitEntity = ent}) end
 	end)
 end
 
@@ -381,7 +533,5 @@ function ENT:TestCollision(_, delta, isbox, _, mask)
 end
 
 function ENT:OnRemove()
-	for ent, _ in pairs(self.ENTITIES) do
-		self:RemoveEntity(ent)
-	end
+	self:Deactivate()
 end

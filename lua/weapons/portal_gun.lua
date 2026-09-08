@@ -6,18 +6,22 @@ SWEP.ViewModelFlip = false
 SWEP.UseHands = true
 
 SWEP.WorldModel = "models/weapons/w_irifle.mdl"
-SWEP.SetHoldType = "pistol"
+SWEP.HoldType = "pistol"
+
+function SWEP:Initialize()
+	self:SetHoldType(self.HoldType)
+end
 
 SWEP.Weight = 5
-SWEP.AutoSwichTo = true
-SWEP.AutoSwichFrom = false
+SWEP.AutoSwitchTo = true
+SWEP.AutoSwitchFrom = false
 
 SWEP.Category = "Seamless Portals"
 SWEP.Slot = 0
 SWEP.SlotPos = 1
 
 SWEP.DrawAmmo = true
-SWEP.DrawChrosshair = true
+SWEP.DrawCrosshair = true
 
 SWEP.Spawnable = true
 SWEP.AdminSpawnable = false
@@ -58,18 +62,22 @@ end
 
 -- so the size is in source units (remember we are using sine/cosine)
 local size_mult = Vector(math.sqrt(2) / 2, math.sqrt(2) / 2, 1)
-local function setPortalPlacement(owner, portal)
+local function getPlacementTrace(owner)
+	if not IsValid(owner) then return nil end
+	local pos, aim = owner:GetShootPos(), owner:GetAimVector()
+	local tr = SeamlessPortals.TraceLine({start = pos, endpos = pos + aim * 99999, filter = seamlessCheck})
+	if not tr or not tr.Hit or tr.HitSky or tr.StartSolid or tr.HitNormal:IsZero() then return nil end
+	return tr
+end
+local function setPortalPlacement(owner, portal, placement_trace)
 	local ang = Angle() -- The portal angle
 	local siz = portal:GetSize()
 	local pos = owner:GetShootPos()
 	local aim = owner:GetAimVector()
 	local mul = siz[3] * 1.1
 
-	local tr = SeamlessPortals.TraceLine({
-		start  = pos,
-		endpos = pos + aim * 99999,
-		filter = seamlessCheck
-	})
+	local tr = placement_trace or getPlacementTrace(owner)
+	if not tr then return false end
 
 	-- Align portals on 45 degree surfaces
 	if math.abs(tr.HitNormal:Dot(ang:Up())) < 0.71 then
@@ -112,6 +120,7 @@ local function setPortalPlacement(owner, portal)
 	portal:SetPos(pos)
 	portal:SetAngles(ang)
 	if CPPI then portal:CPPISetOwner(owner) end
+	return true
 end
 
 function SWEP:ShootFX(sfx, rel)
@@ -135,9 +144,9 @@ function SWEP:DoSpawn(key)
 		ent = ents.Create("seamless_portal")
 		if !ent or !ent:IsValid() then return NULL end
 		ent:SetCreator(self:GetOwner())
+		if not ent:Configure(Vector(66, 34, 8), 50, false) then SafeRemoveEntity(ent) return NULL end
 		ent:Spawn()
-		ent:SetSize(Vector(66, 34, 8))
-		ent:SetSides(50)
+		if not SeamlessPortals.IsLiveEntity(ent) then return NULL end
 		self[key] = ent
 	end
 	return ent
@@ -149,22 +158,26 @@ function SWEP:ClearSpawn(base, link)
 end
 
 function SWEP:DoLink(base, link, colr)
+	local placement_trace = getPlacementTrace(self:GetOwner())
+	if not placement_trace then return false end
 	local ent = self:DoSpawn(base)
 	if !ent or !ent:IsValid() then self:ClearSpawn(base)
 		ErrorNoHalt("Failed linking seamless portal "..base.." > "..link.."!\n"); return end
 	ent:SetColor(colr)
+	if not setPortalPlacement(self:GetOwner(), ent, placement_trace) then return false end
 	ent:LinkPortal(self[link])
-	setPortalPlacement(self:GetOwner(), ent)
-	self:SetNextPrimaryFire(CurTime() + 0.25)
+	return true
 end
 
 function SWEP:PrimaryAttack()
+	self:SetNextPrimaryFire(CurTime() + 0.25)
 	self:ShootFX("NPC_Vortigaunt.Shoot")
 	if CLIENT then return end
 	self:DoLink("Portal1", "Portal2", Color(0, 0, 255))
 end
 
 function SWEP:SecondaryAttack()
+	self:SetNextSecondaryFire(CurTime() + 0.25)
 	self:ShootFX("NPC_Vortigaunt.Shoot")
 	if CLIENT then return end
 	self:DoLink("Portal2", "Portal1", Color(0, 255, 0))

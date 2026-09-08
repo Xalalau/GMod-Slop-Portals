@@ -27,15 +27,43 @@ local function BasisToQuaternion(forward, right, up)
 end
 
 -- Adapted from https://github.com/ValveSoftware/source-sdk-2013/blob/c22529f725414dbb857ace0f170013ab32d35fff/src/game/client/flashlighteffect.cpp#L152
-local function UpdateLightNew(vecPos, vecAng)
+SeamlessPortals.FlashlightContexts = SeamlessPortals.FlashlightContexts or {}
+local contexts = SeamlessPortals.FlashlightContexts
+function SeamlessPortals.ReleaseFlashlight(key)
+	local context = contexts[key]
+	if context and IsValid(context.light) then context.light:Remove() end
+	contexts[key] = nil
+end
+function SeamlessPortals.SuspendFlashlight(key)
+	local context = contexts[key]
+	if context and IsValid(context.light) then context.light:SetBrightness(0) context.light:Update() end
+end
+local function UpdateLightNew(vecPos, vecAng, key)
+	key = key or "portal"
 	local LocalPlayer = LocalPlayer()
-	if !LocalPlayer:FlashlightIsOn() then
-		SeamlessPortals.m_flDistMod = nil
+	if not IsValid(LocalPlayer) or not LocalPlayer:FlashlightIsOn() then
+		SeamlessPortals.ReleaseFlashlight(key)
 		return nil
 	end
 
-	local m_flDistMod = SeamlessPortals.m_flDistMod or 0
-	local state = ProjectedTexture()
+	local context = contexts[key] or {distance = 0}
+	contexts[key] = context
+	local state = context.light
+	if not IsValid(state) then state = ProjectedTexture() context.light = state end
+	if not IsValid(state) then return nil end
+	state:SetBrightness(1)
+    local same_frame = context.frame == FrameNumber()
+    if same_frame and context.input_pos == vecPos and context.input_ang == vecAng
+        and context.base_pos and context.base_ang then
+        -- The renderer temporarily moves this light into each exit portal.
+        -- Never treat that last transformed pose as the next pass's source pose.
+        state:SetPos(context.base_pos)
+        state:SetAngles(context.base_ang)
+        return state
+    end
+	context.frame = FrameNumber()
+    context.input_pos, context.input_ang = Vector(vecPos), Angle(vecAng)
+	local m_flDistMod = context.distance
 	local vecForward = vecAng:Forward()
 	local vecRight = vecAng:Right()
 	local vecUp = vecAng:Up()
@@ -44,7 +72,7 @@ local function UpdateLightNew(vecPos, vecAng)
 
 	local flEpsilon = 0.1 -- Offset flashlight position along vecUp
 	local flDistCutoff = 128.0
-	local flDistDrag = 0.2
+	local flDistDrag = same_frame and 0 or 0.2
 
 	local traceFilter = LocalPlayer
 	local flOffsetY = r_flashlightoffsety:GetFloat()
@@ -148,7 +176,9 @@ local function UpdateLightNew(vecPos, vecAng)
 	state:SetFOV(r_flashlightfov:GetFloat())
 
 	state:SetConstantAttenuation(r_flashlightconstant:GetFloat())
-	state:SetColor(Color(255, 255, 255, r_flashlightambient:GetFloat() * 255))
+	local source_color = SeamlessPortals.GetSavedFlashlightColor and SeamlessPortals.GetSavedFlashlightColor()
+	source_color = source_color or LocalPlayer:GetFlashlightColor()
+	state:SetColor(Color(source_color.r, source_color.g, source_color.b, r_flashlightambient:GetFloat() * 255))
 	state:SetNearZ(r_flashlightnear:GetFloat() + m_flDistMod) -- Push near plane out so that we don't clip the world when the flashlight pulls back
 	state:SetFarZ(r_flashlightfar:GetFloat())
 	state:SetTexture("effects/flashlight001") -- m_FlashlightTexture
@@ -159,8 +189,18 @@ local function UpdateLightNew(vecPos, vecAng)
 
 	state:SetNoCull(true)
 
-	SeamlessPortals.m_flDistMod = m_flDistMod
+	context.distance = m_flDistMod
+    context.base_pos, context.base_ang = Vector(state:GetPos()), Angle(state:GetAngles())
 	return state
 end
 
+
+hook.Add("Think", "seamless_portals_release_lights", function()
+    local ply = LocalPlayer()
+    if IsValid(ply) and ply:FlashlightIsOn() then return end
+    for key in pairs(contexts) do SeamlessPortals.ReleaseFlashlight(key) end
+end)
+hook.Add("ShutDown", "seamless_portals_release_lights", function()
+    for key in pairs(contexts) do SeamlessPortals.ReleaseFlashlight(key) end
+end)
 return UpdateLightNew
