@@ -23,12 +23,22 @@ function SP.ClearHold(ply, ent)
     if SERVER and IsValid(ply) then ply:SetNWEntity("seamless_portals_held",NULL) end
 end
 function SP.RecordHold(ply,ent,kind)
-    if not IsValid(ply) or not SP.IsLiveEntity(ent) then return end
+    if not IsValid(ply) or not SP.IsLiveEntity(ent) or SP.IsPortal(ent)
+        or ent:GetClass()=="seamless_portal_clone" then return end
+    local old=SP.Holds[ply]
+    if old and old.entity==ent and old.kind==kind then return end
     SP.ClearHold(ply)
     SP.Holds[ply]={entity=ent,kind=kind,tick=engine.TickCount()}
     SP.HoldOwners[ent]=SP.HoldOwners[ent] or setmetatable({},{__mode="k"})
     SP.HoldOwners[ent][ply]=true
     if SERVER then ply:SetNWEntity("seamless_portals_held",ent) end
+end
+function SP.HasTrackedHold(ent)
+    for ply in pairs(SP.HoldOwners[ent] or {}) do
+        local record=SP.Holds[ply]
+        if IsValid(ply) and record and record.entity==ent then return true end
+    end
+    return false
 end
 function SP.GetHeldRecord(ply)
     if CLIENT then
@@ -60,6 +70,12 @@ if SERVER then
         SP.HoldOwners[ent]=nil
     end)
 end
+hook.Add("PhysgunPickup","seamless_portals_preserve_hold",function(ply,ent)
+    local record=SP.GetHeldRecord(ply)
+    if record and record.entity~=ent and (SP.IsPortal(ent) or ent:GetClass()=="seamless_portal_clone") then
+        return false
+    end
+end)
 function SP.BlockHeldTraversal(ply,mv,entry,reason)
     if SP.RestorePlayerHull then SP.RestorePlayerHull(ply) end
     local lo,hi

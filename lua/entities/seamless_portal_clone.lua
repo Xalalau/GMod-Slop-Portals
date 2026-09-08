@@ -162,7 +162,8 @@ if SERVER then
 
         -- A held/constrained source is authoritative. Do not resize or feed proxy
         -- correction forces into a native grab controller or a welded assembly.
-        if e2:IsPlayerHolding() or e2.SEAMLESS_PORTALS_CARRY or constraint.HasConstraints(e2) then
+        if e2:IsPlayerHolding() or SeamlessPortals.HasTrackedHold(e2)
+            or e2.SEAMLESS_PORTALS_CARRY or constraint.HasConstraints(e2) then
             local pos, ang = SeamlessPortals.TransformPortal(portal1,portal2,e2:GetPos(),e2:GetAngles())
             if SeamlessPortals.ClampHeldProxy then pos,ang=SeamlessPortals.ClampHeldProxy(e1,e2,portal1,portal2,pos,ang) end
             local scale = e2:GetModelScale()*portal2:GetSize().x/portal1:GetSize().x

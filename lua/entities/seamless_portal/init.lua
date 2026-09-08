@@ -306,7 +306,9 @@ function ENT:Think()
             if not exit_cutout:AddProxy(clone) then cutout:RemoveEntity(ent) continue end
 		end
 
-		if ent:IsPlayerHolding() or (SeamlessPortals.CarryKeepsAdmission and SeamlessPortals.CarryKeepsAdmission(ent,self)) then continue end
+		if ent:IsPlayerHolding() or SeamlessPortals.HasTrackedHold(ent)
+            or clone:IsPlayerHolding()
+            or (SeamlessPortals.CarryKeepsAdmission and SeamlessPortals.CarryKeepsAdmission(ent,self)) then continue end
 
 		local ent_pos = ent:GetPos()
 		local ent_pos_center = ent:LocalToWorld(ent:OBBCenter())
@@ -338,8 +340,6 @@ function ENT:Think()
 			continue
 		end
 
-		ent:ForcePlayerDrop()
-		clone:ForcePlayerDrop()
 		ent:SetPos(new_pos) -- avoid physobj lerp
 		ent:SetAngles(new_ang)
 		phys:SetVelocity(new_vel)
