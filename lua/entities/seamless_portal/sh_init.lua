@@ -94,6 +94,16 @@ end
 -- Keep the collider available to bullet continuation, without a local impact.
 function ENT:ImpactTrace() return true end
 
+local flashlight_extents=Vector(4,4,4)
+function ENT:TestCollision(startpos,delta,isbox,extents,mask)
+    if CLIENT and (mask==33570947 or mask==33570827) and extents==flashlight_extents then return false end
+    -- Native convex traces can report fraction zero far outside the aperture
+    -- when a ray runs exactly along its front plane (not through it).
+    if not isbox and math.abs(delta:Dot(self:GetUp()))<math.max(delta:Length(),1)*1e-6
+        and math.abs(SeamlessPortals.PlaneDistance(self,startpos))<0.05 then return false end
+    return true
+end
+
 SeamlessPortals.Portals = SeamlessPortals.Portals or {}
 SeamlessPortals.TransformPortal = function(a, b, pos, ang)
 	if !IsValid(a) or !IsValid(b) then return Vector(), Angle() end

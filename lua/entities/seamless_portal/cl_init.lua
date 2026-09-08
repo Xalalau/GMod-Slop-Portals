@@ -163,17 +163,6 @@ function ENT:Think()
 	end
 end
 
-local flashlight_extents = Vector(4, 4, 4)
-function ENT:TestCollision(startpos, delta, isbox, extents, mask)
-	-- probably flashlight
-	if (mask == 33570947 or mask == 33570827) and extents == flashlight_extents then return false end
-
-    -- C04 handles real pellet impacts in both realms; do not make portals
-    -- transparent to client bullets only in singleplayer.
-
-	return true
-end
-
 SeamlessPortals.DrawPlayerInView = true
 SeamlessPortals.GetDrawDistance = function()
 	return varDrawDistance:GetFloat()
