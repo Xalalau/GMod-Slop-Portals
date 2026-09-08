@@ -19,6 +19,7 @@ local paths = {
     "autorun/sh_detours.lua",
     "autorun/sh_player_teleport.lua",
     "autorun/sh_seamless_diagnostics.lua",
+    "autorun/sh_seamless_tool_lights.lua",
     "cl_portal_flashlight.lua",
     "entities/seamless_portal/cl_init.lua",
     "entities/seamless_portal/init.lua",
