@@ -378,6 +378,38 @@ assert(SP.MirrorPhysgunContext(p,NULL,true,e,0,Vector())==true)
 e:SetNWEntity('seamless_portals_clip_entry',NULL)
 assert(SP.MirrorPhysgunContext(p,NULL,true,e,0,Vector())==nil)
 ''')
+    test('F-T25', 'Tracer streaks keep muzzle ownership, speed and portal clipping', r'''
+SERVER=false;CLIENT=true
+function Material(name) return name end
+function Color(r,g,b,a) return {r=r,g=g,b=b,a=a or 255} end
+local clock=0
+function CurTime() return clock end
+local observer=player();function LocalPlayer() return observer end
+''' + src('lua/seamless_portals/tracers.lua') + r'''
+local SP=SeamlessPortals
+local weapon=prop();function weapon:LookupAttachment() return 1 end
+function weapon:GetAttachment() return {Pos=Vector(0,2,47)} end
+local a={start=Vector(0,0,50),finish=Vector(0,0,0)}
+local b={start=Vector(200,0,0),finish=Vector(50000,-50000,30000)}
+SP.EmitBulletVisual('Tracer',{a,b},weapon)
+local first,last=SP.TracerSegments[1],SP.TracerSegments[2]
+assert(#SP.TracerSegments==2 and first.speed==5000 and last.speed==5000)
+nearvec(first.start,Vector(0,2,47));nearvec(first.finish,a.finish)
+nearvec(last.start,b.start);nearvec(last.finish,b.finish);nearvec(a.start,Vector(0,0,50))
+local p,q=SP.SampleBulletTracer(first,0)
+nearvec(p,first.start);nearvec(q,first.finish)
+assert(SP.SampleBulletTracer(first,0.02)==nil, 'Short entry leg must end at the portal')
+local p0,q0=SP.SampleBulletTracer(last,0)
+local p1,q1=SP.SampleBulletTracer(last,0.01)
+near(p1:Distance(p0),50);near(q1:Distance(q0),50)
+near(q0:Distance(p0),96)
+assert(SP.SampleBulletTracer(last,last.length/last.speed)==nil)
+function weapon:GetAttachment() return {Pos=Vector(9999,9999,9999)} end
+nearvec(SP.BulletMuzzlePoint(a.start,weapon),a.start)
+weapon.owner=observer
+function observer:ShouldDrawLocalPlayer() return false end
+nearvec(SP.BulletMuzzlePoint(a.start,weapon),a.start)
+''')
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
                   failed=sum(r['status'] == 'FAIL' for r in results))
