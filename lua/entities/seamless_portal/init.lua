@@ -354,6 +354,7 @@ function ENT:Think()
 		end
 		-- Outputs describe a completed transfer, not admission into a cutout.
 		ent.SEAMLESS_PORTALS_LAST_TRANSFER = engine.TickCount()
+        if SeamlessPortals.ResetToolTrail then SeamlessPortals.ResetToolTrail(ent,ent_pos) end
         self:TriggerOutput("OnTeleportFrom", ent)
 		if IsValid(exit_portal) and IsValid(ent) then exit_portal:TriggerOutput("OnTeleportTo", ent) end
 		if not SeamlessPortals.IsLiveEntity(ent) then continue end

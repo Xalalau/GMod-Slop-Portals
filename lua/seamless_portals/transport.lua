@@ -207,6 +207,7 @@ function SP.CommitTransport(plan)
     if not ok then SP.RollbackTransport(plan) return false,tostring(err) end
     for _,item in ipairs(plan.items) do
         item.entity.SEAMLESS_PORTALS_LAST_TRANSFER=engine.TickCount()
+        if SP.ResetToolTrail then SP.ResetToolTrail(item.entity,item.pos) end
         item.entity.SEAMLESS_PORTALS_CLONE=nil
         if IsValid(item.clone) then
             item.clone.SEAMLESS_PORTALS_RETIRED = true

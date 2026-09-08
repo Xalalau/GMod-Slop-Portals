@@ -54,6 +54,7 @@ local paths = {
     "seamless_portals/tests/smoke.lua",
     "seamless_portals/tool_effects.lua",
     "seamless_portals/tool_features.lua",
+    "seamless_portals/tool_trails.lua",
     "seamless_portals/traces.lua",
     "seamless_portals/transport.lua",
     "weapons/gmod_tool/stools/portal_behavior_tool.lua",
@@ -75,7 +76,8 @@ local server_only = {
     ["autorun/server/sv_portals_pvs.lua"] = true,
     ["entities/seamless_portal/init.lua"] = true,
     ["entities/seamless_portal_cutout.lua"] = true,
-    ["seamless_portals/transport.lua"] = true
+    ["seamless_portals/transport.lua"] = true,
+    ["seamless_portals/tool_trails.lua"] = true
 }
 for _, path in ipairs(paths) do
     if SERVER or not server_only[path] then
@@ -100,6 +102,7 @@ for _, name in ipairs({"FeatureEnabled", "InAperture", "TracePortalLine", "Porta
     assert(isfunction(SP[name]), "Missing inherited RC2 API: " .. name)
 end
 if SERVER then
+    assert(isfunction(SP.ResetToolTrail), "Missing Trail Tool crossing adapter")
     assert(isfunction(SP.CanTargetPropertyThroughPortal), "Missing context-menu range adapter")
     for _,name in ipairs({"PlanTransport","CommitTransport","SnapshotDamage","CopyDamage","RelayBlast","RelayPortalMelee","TransferProjectile","UpdateRPGGuidance"}) do
         assert(isfunction(SP[name]),"Missing field API: "..name)

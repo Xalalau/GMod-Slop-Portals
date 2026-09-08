@@ -991,6 +991,128 @@ assert(SP.TransferProjectile(e,.015) and #made==0 and not native:GetNoDraw())
 TICK=TICK+1;e:SetPos(initial);phys.vel=Vector(velocity);native:Remove()
 assert(SP.TransferProjectile(e,.015) and #made==0 and IsValid(glow))
 ''', modules['projectiles'])
+    tool_trail_fixture = r'''
+local SP=SeamlessPortals;local a,b=pair();local e=prop(Vector(0,0,4))
+function IsColor(v) return type(v)=='table' and v.r~=nil and v.a~=nil end
+local data={Color={r=10,g=80,b=240,a=150},Length=2.5,StartSize=16,EndSize=4,Material='trails/electric'}
+e.EntityMods={trail=data};local made,owned,anchors,timers={},{},{},{}
+timer.Simple=function(delay,callback) timers[#timers+1]={delay=delay,callback=callback} end
+local function expire()
+ local pending=timers;timers={}
+ for _,row in ipairs(pending) do assert(row.delay==2.6);row.callback() end
+end
+local function sprite(parent)
+ local s=prop();s.parent=parent
+ function s:GetClass() return 'env_spritetrail' end
+ function s:GetParent() return self.parent end
+ function s:SetParent(parent) self.parent=parent end
+ function s:SetVar(key,value) self[key]=value end
+ function s:SetLocalPos(pos) self:SetPos(IsValid(self.parent) and self.parent:GetPos()+pos or pos) end
+ function s:Spawn() end
+ function s:DeleteOnRemove(child) self.remove_children=self.remove_children or {};self.remove_children[child]=true end
+ function s:DontDeleteOnRemove(child) if self.remove_children then self.remove_children[child]=nil end end
+ local remove=s.Remove
+ function s:Remove()
+  for child in pairs(self.remove_children or {}) do if IsValid(child) then child:Remove() end end
+  remove(self)
+ end
+ return s
+end
+ents.Create=function(class) assert(class=='info_target');local anchor=sprite();anchors[#anchors+1]=anchor;return anchor end
+function e:DeleteOnRemove(child) owned[child]=true end
+function e:DontDeleteOnRemove(child) owned[child]=nil end
+util.SpriteTrail=function(parent,attachment,color,additive,startwidth,endwidth,lifetime,res,material)
+ assert(color==data.Color and not additive)
+ assert(startwidth==16 and endwidth==4 and lifetime==2.5 and res==.1 and material=='trails/electric.vmt')
+ local s=sprite(parent);s.native_parent=parent;s.attachment=attachment;made[#made+1]=s;return s
+end
+''' + src('lua/seamless_portals/tool_trails.lua') + r'''
+local function create(attachment)
+ return util.SpriteTrail(e,attachment,data.Color,false,16,4,2.5,.1,'trails/electric.vmt')
+end
+local original=create(0);made={};e.SToolTrail=original
+local undoEntries,cleanupEntries={original},{original}
+undo={ReplaceEntity=function() error('keep the native undo handle and its callback') end}
+cleanup={ReplaceEntity=function() error('keep the native cleanup handle') end}
+local source=Vector(e:GetPos())
+'''
+    test('TT-T01', 'Old tool trail stays visible at the entrance with native settings and stable ownership', tool_trail_fixture + r'''
+local body=e:GetPhysicsObject();e:SetPos(Vector(0,800,4))
+assert(SP.ResetToolTrail(e,source))
+assert(e.SToolTrail==original and original.SEAMLESS_PORTALS_VISIBLE_TRAIL==made[1] and owned[made[1]])
+assert(not original:GetNoDraw() and not made[1]:GetNoDraw() and original.remove_children[made[1]])
+assert(not IsValid(original:GetParent()));nearvec(original:GetPos(),source)
+assert(undoEntries[1]==original and cleanupEntries[1]==original and e.EntityMods.trail==data)
+assert(e:GetPhysicsObject()==body);nearvec(e:GetPos(),Vector(0,800,4))
+expire();assert(original:GetNoDraw() and IsValid(made[1]) and not made[1]:GetNoDraw())
+''')
+    test('TT-T02', 'Repeated crossings keep all unexpired tails and release references after native lifetime', tool_trail_fixture + r'''
+for i=1,4 do
+ local before=e:GetPos();e:SetPos(before+Vector(0,800,0))
+ assert(SP.ResetToolTrail(e,before));assert(original.SEAMLESS_PORTALS_VISIBLE_TRAIL==made[i])
+ for j=1,i do assert(IsValid(made[j]) and not made[j]:GetNoDraw()) end
+ assert(not original:GetNoDraw() and e.SToolTrail==original)
+end
+expire()
+for i=1,3 do assert(not IsValid(made[i])) end
+assert(original:GetNoDraw() and IsValid(made[4]) and not made[4]:GetNoDraw())
+local count=0;for _ in pairs(original.remove_children) do count=count+1 end;assert(count==1)
+count=0;for _ in pairs(owned) do count=count+1 end;assert(count==2)
+assert(SP.ResetToolTrail(e,e:GetPos()));expire();assert(not IsValid(made[4]) and IsValid(made[5]))
+''')
+    test('TT-T03', 'Failed allocation retains the previous trail and releases the temporary anchor', tool_trail_fixture + r'''
+SP.ToolTrailFactory.base=function() return NULL end
+assert(not SP.ResetToolTrail(e,source) and IsValid(original) and e.SToolTrail==original)
+assert(not original:GetNoDraw() and original:GetParent()==e and #timers==0)
+assert(not IsValid(anchors[#anchors]))
+SP.ToolTrailFactory.base=function() error('allocation failure') end
+assert(not pcall(create,0) and not IsValid(anchors[#anchors]))
+''')
+    test('TT-T04', 'Malformed, foreign, legacy and invalid source states leave trails untouched', tool_trail_fixture + r'''
+original.parent=b;assert(not SP.ResetToolTrail(e,source));original.parent=e
+e.EntityMods=nil;assert(not SP.ResetToolTrail(e,source));e.EntityMods={trail=data}
+data.StartSize=0/0;assert(not SP.ResetToolTrail(e,source));data.StartSize=16
+original.SEAMLESS_PORTALS_DETACHABLE_TRAIL=nil;assert(not SP.ResetToolTrail(e,source));original.SEAMLESS_PORTALS_DETACHABLE_TRAIL=true
+assert(not SP.ResetToolTrail(e,nil) and not SP.ResetToolTrail(e,Vector(0/0,0,0)))
+original:Remove();assert(not SP.ResetToolTrail(e,source));assert(#made==0 and #timers==0)
+''')
+    test('TT-T05', 'Rigid transport splits trails only after the whole physics commit succeeds', tool_trail_fixture
+         + src('lua/seamless_portals/transport.lua') + r'''
+local plan=assert(SP.PlanTransport(e,a,b));local body=e:GetPhysicsObject()
+body.fail_once=true
+assert(not SP.CommitTransport(plan) and e.SToolTrail==original and #made==0)
+plan=assert(SP.PlanTransport(e,a,b));assert(SP.CommitTransport(plan))
+assert(original.SEAMLESS_PORTALS_VISIBLE_TRAIL==made[1] and IsValid(original) and e:GetPhysicsObject()==body)
+nearvec(original:GetPos(),source);assert(not original:GetNoDraw())
+''')
+    test('TT-T06', 'Supported projectiles retain their applied Tool Trail history at the source', tool_trail_fixture
+         + modules['projectiles'] + r'''
+function e:GetClass() return 'prop_combine_ball' end
+e:GetPhysicsObject().vel=Vector(0,0,-200)
+SP.RawTraceLine=function() return {Hit=false} end
+assert(SP.TransferProjectile(e,.025) and #made==1 and original.SEAMLESS_PORTALS_VISIBLE_TRAIL==made[1])
+nearvec(original:GetPos(),source);assert(not original:GetNoDraw())
+''')
+    test('TT-T07', 'Normal parenting clears temporary native attachments and preserves nonzero attachments', tool_trail_fixture + r'''
+assert(original:GetParent()==e and not IsValid(original.native_parent))
+for _,anchor in ipairs(anchors) do assert(not IsValid(anchor)) end
+local count=#anchors;local attached=create(1)
+assert(attached.native_parent==e and attached.attachment==1 and not attached.SEAMLESS_PORTALS_DETACHABLE_TRAIL and #anchors==count)
+''')
+    test('TT-T08', 'Undo or tool removal during fading deletes every tail and expiry callbacks remain safe', tool_trail_fixture + r'''
+for i=1,3 do assert(SP.ResetToolTrail(e,e:GetPos())) end
+original:Remove();e.SToolTrail=nil
+for _,trail in ipairs(made) do assert(not IsValid(trail)) end
+expire();assert(not SP.ResetToolTrail(e,source))
+''')
+    test('TT-T09', 'Reload preserves one factory wrapper and a later addon wrapper', tool_trail_fixture + r'''
+local ours=util.SpriteTrail
+local outer=function(...) return ours(...) end
+util.SpriteTrail=outer
+''' + src('lua/seamless_portals/tool_trails.lua') + r'''
+assert(util.SpriteTrail==outer and SP.ToolTrailFactory.wrapper==ours)
+assert(create(0).SEAMLESS_PORTALS_DETACHABLE_TRAIL)
+''')
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
                   failed=sum(r['status'] == 'FAIL' for r in results))

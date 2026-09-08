@@ -1,7 +1,10 @@
 AddCSLuaFile("seamless_portals/core.lua")
 include("seamless_portals/core.lua")
 
-if SERVER then include("seamless_portals/transport.lua") end
+if SERVER then
+    include("seamless_portals/tool_trails.lua")
+    include("seamless_portals/transport.lua")
+end
 
 AddCSLuaFile("seamless_portals/holding.lua")
 include("seamless_portals/holding.lua")

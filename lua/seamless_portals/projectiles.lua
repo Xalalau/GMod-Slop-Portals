@@ -133,11 +133,13 @@ function SP.TransferProjectile(ent,dt,record)
         body_pos=body_pos+push
     end
     -- Identity, owner, damage settings, native fuse and callbacks are untouched.
+    local source_pos=ent:GetPos()
     split_grenade_trail(ent)
     ent:SetPos(destination) ent:SetAngles(angle)
     if IsValid(phys) then
         phys:SetPos(body_pos) phys:SetAngles(body_angle) phys:SetVelocityInstantaneous(new_velocity) phys:Wake()
     else ent:SetLocalVelocity(new_velocity) end
+    if SP.ResetToolTrail then SP.ResetToolTrail(ent,source_pos) end
     record.tick=engine.TickCount() record.exit=exit record.returning=true tracked[ent]=record
     SP.CountField("projectile_transfers")
     SP.RunSafeHook("SeamlessPortalsProjectileTransferred",ent,entry,exit)
