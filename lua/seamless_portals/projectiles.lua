@@ -14,6 +14,30 @@ local function register(ent)
 end
 hook.Add("OnEntityCreated","seamless_portals_projectiles",register)
 for _,ent in ipairs(ents.GetAll()) do register(ent) end
+local function split_grenade_trail(ent)
+    if ent:GetClass()~="npc_grenade_frag" then return end
+    local native=ent:GetInternalVariable("m_pGlowTrail")
+    local old=SP.IsLiveEntity(ent.SEAMLESS_PORTALS_GRENADE_TRAIL) and ent.SEAMLESS_PORTALS_GRENADE_TRAIL or native
+    if not SP.IsLiveEntity(old) or old:GetClass()~="env_spritetrail" or old:GetParent()~=ent then return end
+    local attachment=old:GetInternalVariable("m_nAttachment") or 0
+    local lifetime=old:GetInternalVariable("lifetime") or 0.5
+    local trail=util.SpriteTrail(ent,attachment,old:GetColor(),true,
+        old:GetInternalVariable("startwidth") or 8,old:GetInternalVariable("endwidth") or 1,
+        lifetime,old:GetInternalVariable("m_flTextureRes") or 0,old:GetModel())
+    if not SP.IsLiveEntity(trail) then return end
+    trail:SetRenderMode(old:GetRenderMode()) trail:SetRenderFX(old:GetRenderFX())
+    for _,key in ipairs({"m_nBrightness","m_flStartWidthVariance","m_flMinFadeLength","HDRColorScale"}) do
+        local value=old:GetInternalVariable(key)
+        if value~=nil then trail:SetSaveValue(key,value) end
+    end
+    -- Native trails retain client-side world positions across SetPos. Their
+    -- internal entity handles are read-only in GLua; keep the original hidden
+    -- for native fuse cleanup and replace only our visible trail at each jump.
+    if SP.IsLiveEntity(native) then native:SetNoDraw(true) end
+    if old~=native then old:Remove() end
+    ent.SEAMLESS_PORTALS_GRENADE_TRAIL=trail
+    ent:DeleteOnRemove(trail)
+end
 function SP.ProjectileCrossing(ent,delta)
     local best
     for _,entry in ipairs(SP.Portals) do
@@ -109,6 +133,7 @@ function SP.TransferProjectile(ent,dt,record)
         body_pos=body_pos+push
     end
     -- Identity, owner, damage settings, native fuse and callbacks are untouched.
+    split_grenade_trail(ent)
     ent:SetPos(destination) ent:SetAngles(angle)
     if IsValid(phys) then
         phys:SetPos(body_pos) phys:SetAngles(body_angle) phys:SetVelocityInstantaneous(new_velocity) phys:Wake()

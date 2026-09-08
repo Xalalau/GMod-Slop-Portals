@@ -49,3 +49,27 @@ These were automated native probes using spawned grenades. Manual weapon throws,
 graphical inspection and a second multiplayer observer were not tested. This
 fix does not change the addon's preview release status or claim support for
 third-party grenade classes.
+
+## Fuse trail follow-up
+
+The red `env_spritetrail` kept its client-side position history after teleport,
+producing a beam directly between the portals. Each successful frag transfer
+now starts a fresh visible trail with the existing material, attachment, color,
+widths and lifetime. Subsequent transfers remove the previous replacement.
+The original trail remains hidden and owned by the native grenade: its internal
+entity handle cannot be reassigned through GLua. The separate fuse glow is
+unchanged, and replacement trails are deleted with the grenade.
+
+Evidence run: `grenade_trail_20260908_085541`. Automated native probes ran on the
+existing dedicated `gm_flatgrass` server and singleplayer `gm_construct`
+server/client. Both server topologies completed single and chained transfers,
+retaining the physics body, main glow and fuse deadline. All effects disappeared
+after native detonation. Client samples initially showed a visible trail spanning
+809 units across an 800-unit separation; after the fix, visible trail bounds
+stayed below 49 units, including two consecutive transfers. Lua error captures
+were empty and monitored smoke checks ran in all three realms.
+
+Offline cases F-T47–F-T50 cover fresh trail creation, repeated transfers, refused
+crossings, allocation failure and stale or unrelated visual handles. Native
+render-bound sampling is automated evidence; manual graphical testing and a
+second multiplayer observer remain pending.

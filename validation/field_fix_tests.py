@@ -876,6 +876,7 @@ NOW=NOW+.2;hook.Run('Think');assert(calls==16 and saw_last)
 local SP=SeamlessPortals;local a,b=pair()
 local e=prop(Vector(0,0,25));local phys=e:GetPhysicsObject()
 function e:GetClass() return 'npc_grenade_frag' end
+function e:GetInternalVariable(key) return self.internal and self.internal[key] end
 phys.vel=Vector(100,0,-1000)
 local initial=e:GetPos();local velocity=Vector(phys.vel)
 SP.RawTraceLine=function() return {Hit=false,StartSolid=false,AllSolid=false,Fraction=1} end
@@ -930,6 +931,65 @@ function e:GetClass() return 'npc_grenade_frag' end
 e:SetPos(Vector(0,0,120));assert(not SP.TransferProjectile(e,100))
 e:SetPos(initial);assert(not SP.TransferProjectile(e,0))
 assert(SP.TransferProjectile(e,.015))
+''', modules['projectiles'])
+    trail_fixture = grenade_fixture + r'''
+local made,owned={},{}
+local function sprite()
+ local s=prop();s.parent=e;s.values={lifetime=.5,startwidth=8,endwidth=1,m_nAttachment=1,
+  m_flTextureRes=0,m_nBrightness=255,m_flStartWidthVariance=0,m_flMinFadeLength=0,HDRColorScale=1}
+ function s:GetClass() return 'env_spritetrail' end
+ function s:GetParent() return self.parent end
+ function s:GetInternalVariable(k) return self.values[k] end
+ function s:SetSaveValue(k,v) self.values[k]=v;return true end
+ function s:GetColor() return {r=255,g=0,b=0,a=255} end
+ function s:GetModel() return 'sprites/bluelaser1.vmt' end
+ function s:GetRenderMode() return 5 end
+ function s:GetRenderFX() return 0 end
+ function s:SetRenderMode(v) assert(v==5) end
+ function s:SetRenderFX(v) assert(v==0) end
+ return s
+end
+local native=sprite();local glow=prop()
+e.internal={m_pGlowTrail=native,m_pMainGlow=glow,m_flDetonateTime=42}
+function e:SetSaveValue() error('native sprite handles cannot be assigned in GLua') end
+function e:DeleteOnRemove(child) owned[child]=true end
+util.SpriteTrail=function(parent,attachment,color,additive,startwidth,endwidth,lifetime,res,model)
+ assert(parent==e and attachment==1 and color.r==255 and color.g==0 and additive)
+ assert(startwidth==8 and endwidth==1 and lifetime==.5 and res==0 and model==native:GetModel())
+ nearvec(e:GetPos(),initial) -- Reset history before moving to the exit.
+ local s=sprite();made[#made+1]=s;return s
+end
+'''
+    test('F-T47', 'Frag crossing starts a fresh visible trail while retaining native glow and fuse ownership', trail_fixture + r'''
+assert(SP.TransferProjectile(e,.015))
+local trail=assert(e.SEAMLESS_PORTALS_GRENADE_TRAIL)
+assert(#made==1 and trail~=native and not trail:GetNoDraw() and native:GetNoDraw())
+assert(trail:GetParent()==e and owned[trail] and trail.values.m_nBrightness==255)
+assert(e.internal.m_pGlowTrail==native and e.internal.m_pMainGlow==glow and e.internal.m_flDetonateTime==42)
+assert(IsValid(native) and IsValid(glow) and e:GetPhysicsObject()==phys)
+''', modules['projectiles'])
+    test('F-T48', 'Repeated frag crossings retire the previous replacement instead of accumulating trails', trail_fixture + r'''
+for i=1,3 do
+ TICK=TICK+1;e:SetPos(initial);phys.vel=Vector(velocity)
+ assert(SP.TransferProjectile(e,.015))
+ assert(#made==i and e.SEAMLESS_PORTALS_GRENADE_TRAIL==made[i])
+ for j=1,i-1 do assert(not IsValid(made[j])) end
+ assert(IsValid(native) and native:GetNoDraw() and owned[made[i]])
+end
+''', modules['projectiles'])
+    test('F-T49', 'Rejected crossings and failed trail allocation preserve the existing fuse visuals', trail_fixture + r'''
+util.TraceHull=function() return {Hit=true} end
+assert(not SP.TransferProjectile(e,.015) and #made==0 and not native:GetNoDraw())
+util.TraceHull=function() return {Hit=false} end
+util.SpriteTrail=function() return NULL end
+assert(SP.TransferProjectile(e,.015) and not native:GetNoDraw())
+assert(e.SEAMLESS_PORTALS_GRENADE_TRAIL==nil and IsValid(native) and IsValid(glow))
+''', modules['projectiles'])
+    test('F-T50', 'Missing or unrelated frag trail handles do not touch other effects', trail_fixture + r'''
+native.parent=glow
+assert(SP.TransferProjectile(e,.015) and #made==0 and not native:GetNoDraw())
+TICK=TICK+1;e:SetPos(initial);phys.vel=Vector(velocity);native:Remove()
+assert(SP.TransferProjectile(e,.015) and #made==0 and IsValid(glow))
 ''', modules['projectiles'])
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
