@@ -26,6 +26,7 @@ def main(root, output):
     base += src('lua/seamless_portals/crossing.lua')
     base += '''
 DMG_BLAST,DMG_CLUB,MASK_SHOT,MASK_SHOT_HULL=64,128,117,119
+PLAYERANIMEVENT_ATTACK_PRIMARY,ACT_VM_MISSCENTER=0,197
 angle_zero=Angle()
 function LocalToWorld(pos,ang,origin,rotation) return origin+pos,ang end
 bit.bnot=function(n) return ~n end
@@ -235,6 +236,150 @@ last.Hit=false;last.Entity=NULL
 assert(not SP.RelayPortalMelee(a,d,Vector(0,0,-1),first));assert(hits==0 and effects==0)
 d:SetDamageType(2);last.Hit=true;last.Entity=target
 assert(not SP.RelayPortalMelee(a,d,Vector(0,0,-1),first));assert(hits==0 and effects==0)
+''', modules['traces'] + modules['melee'])
+    melee_sound = r'''
+local SP=SeamlessPortals;local a,b=pair();local p=player();local weapon=prop()
+function p:GetShootPos() return Vector(0,0,30) end
+function p:GetAimVector() return Vector(0,0,-1) end
+function p:GetActiveWeapon() return weapon end
+function weapon:GetClass() return 'weapon_crowbar' end
+weapon.owner=p
+local event={OriginalSoundName='Weapon_Crowbar.Melee_Hit',SoundName='physics/flesh/flesh_impact_bullet3.wav',Entity=p}
+local calls=0
+SP.RawTraceLine=function(data)
+ calls=calls+1;assert(data.SeamlessIgnore and data.mask==MASK_SHOT_HULL and data.filter==p)
+ near(data.start:Distance(data.endpos),75)
+ return {Hit=true,Entity=a,HitPos=Vector()}
+end
+'''
+    for realm in ('server', 'client'):
+        load = ('' if realm == 'server' else 'CLIENT=true;SERVER=false\n') + modules['melee']
+        load += src('lua/seamless_portals/sound.lua')
+        test('F-T42' if realm == 'server' else 'F-T43',
+             'Crowbar portal impact is vetoed before audio relay in the ' + realm, melee_sound + r'''
+local paths=0;SP.SoundPaths=function() paths=paths+1;return {} end
+assert(hook.Run('EntityEmitSound',event)==false)
+assert(calls==1 and paths==0 and #net.messages==0)
+CVARS.seamless_portals_soundrelay_server.value=0
+SP.SetFeature(a,'damage',false);a.exit=NULL
+assert(hook.Run('EntityEmitSound',event)==false)
+event.Entity=weapon;assert(hook.Run('EntityEmitSound',event)==false)
+assert(calls==3 and paths==0 and #net.messages==0)
+''', load)
+    test('F-T44', 'Melee sound guard preserves swings, other weapons and local impacts', melee_sound + r'''
+event.OriginalSoundName='Weapon_Crowbar.Single'
+assert(not SP.SuppressPortalMeleeSound(event) and calls==0)
+event.OriginalSoundName=nil
+assert(not SP.SuppressPortalMeleeSound(event) and calls==0)
+event.OriginalSoundName='Weapon_Crowbar.Melee_Hit'
+function weapon:GetClass() return 'weapon_pistol' end
+assert(not SP.SuppressPortalMeleeSound(event) and calls==0)
+function weapon:GetClass() return 'weapon_crowbar' end
+local target=prop()
+SP.RawTraceLine=function() return {Hit=true,Entity=target} end
+assert(not SP.SuppressPortalMeleeSound(event))
+event.Entity=NULL;assert(not SP.SuppressPortalMeleeSound(event))
+''', modules['melee'])
+    test('F-T45', 'Native hull edge refinement keeps the nearest real surface sound', melee_sound + r'''
+local target=prop()
+SP.RawTraceLine=function(data)
+ calls=calls+1
+ if calls==3 then return {Hit=true,Entity=a,HitPos=Vector(0,0,10)} end
+ if calls==4 then return {Hit=true,Entity=target,HitPos=Vector(0,0,20)} end
+ return {Hit=false}
+end
+util.TraceHull=function(data)
+ near(data.start:Distance(data.endpos),75-1.732*16)
+ nearvec(data.mins,Vector(-16,-16,-16));nearvec(data.maxs,Vector(16,16,16))
+ return {Hit=true,Entity=a,HitPos=Vector(0,0,15)}
+end
+assert(not SP.SuppressPortalMeleeSound(event) and calls==10)
+calls=0
+SP.RawTraceLine=function() calls=calls+1;return {Hit=false} end
+assert(SP.SuppressPortalMeleeSound(event) and calls==10)
+''', modules['melee'])
+    melee_range = r'''
+local SP=SeamlessPortals;local a,b=pair();local p=player();local weapon=prop()
+function weapon:GetClass() return 'weapon_crowbar' end
+function p:GetActiveWeapon() return weapon end
+function p:GetShootPos() return Vector(0,0,30) end
+local target=prop();local hits,effects=0,0
+function target:DispatchTraceAttack(info,tr,dir)
+ hits=hits+1;near(info:GetDamage(),10);assert(info:GetAttacker()==p)
+ nearvec(dir,Vector(0,0,1))
+end
+function EffectData() return setmetatable({},{__index=function() return function() end end}) end
+util.Effect=function() effects=effects+1 end
+local d=DamageInfo();d:SetAttacker(p);d:SetDamage(10);d:SetDamageType(DMG_CLUB)
+local first={Hit=true,Entity=a,StartPos=p:GetShootPos(),HitPos=Vector(),HitNormal=a:GetUp(),Fraction=.4}
+local distance=44.9
+SP.TraceLine=function(data)
+ if data.start.x<100 then return first end
+ near(data.endpos.z,45);assert(data.filter(b)==false and data.filter(p)==false)
+ local hit=distance<=data.endpos.z
+ return {Hit=hit,Entity=hit and target or NULL,StartPos=data.start,
+  HitPos=hit and Vector(200,0,distance) or data.endpos,HitNormal=Vector(0,0,-1),
+  Fraction=hit and (distance-data.start.z)/(data.endpos.z-data.start.z) or 1}
+end
+'''
+    test('F-T46', 'Crowbar continuation spends its range on both sides of the portal', melee_range + r'''
+assert(SP.RelayPortalMelee(a,d,Vector(0,0,-1),first));assert(hits==1 and effects==1)
+distance=45.1
+assert(not SP.RelayPortalMelee(a,d,Vector(0,0,-1),first));assert(hits==1 and effects==1)
+''', modules['traces'] + modules['melee'])
+    test('F-T47', 'Crowbar respects damage switches, backfaces and intervening cover', melee_range + r'''
+SP.SetFeature(b,'damage',false)
+assert(not SP.RelayPortalMelee(a,d,Vector(0,0,-1),first))
+SP.SetFeature(b,'damage',true);SP.SetFeature(a,'damage',false)
+assert(not SP.RelayPortalMelee(a,d,Vector(0,0,-1),first))
+SP.SetFeature(a,'damage',true)
+local cv=CreateConVar('seamless_portals_damage','0')
+assert(not SP.RelayPortalMelee(a,d,Vector(0,0,-1),first));cv.value=1
+assert(not SP.RelayPortalMelee(a,d,Vector(0,0,1),first))
+SP.TraceLine=function(data) return {Hit=true,Entity=WORLD,HitPos=Vector(0,0,20)} end
+assert(not SP.RelayPortalMelee(a,d,Vector(0,0,-1),first))
+assert(hits==0 and effects==0)
+''', modules['traces'] + modules['melee'])
+    test('F-T48', 'Remote floor and wall effects explicitly address worldspawn', melee_fixture + r'''
+WORLD.valid=false;last.Entity=WORLD;last.HitWorld=true;last.HitBoxBone=7
+local effect
+function EffectData()
+ effect={}
+ return setmetatable(effect,{__index=function(_,key)
+  return function(self,value) self[key]=value end
+ end})
+end
+assert(SP.RelayPortalMelee(a,d,Vector(0,0,-1),first))
+assert(hits==0 and effects==1 and effect.SetEntIndex==0 and effect.SetHitBox==7)
+nearvec(effect.SetOrigin,last.HitPos);nearvec(effect.SetNormal,last.HitNormal)
+''', modules['traces'] + modules['melee'])
+    for realm in ('server', 'client'):
+        test('F-T49' if realm == 'server' else 'F-T50',
+             'Crowbar animation follows the remote hit in the ' + realm, melee_sound + r'''
+local animations=0;weapon.nextattack=123
+function weapon:SendWeaponAnim(activity)
+ animations=animations+1;assert(activity==ACT_VM_MISSCENTER)
+end
+local result={Hit=false,Entity=NULL,SeamlessSegments={{Entity=a},{Entity=NULL}}}
+SP.TracePortalLine=function() return result end
+assert(hook.Run('DoAnimationEvent',p,PLAYERANIMEVENT_ATTACK_PRIMARY)==nil)
+assert(animations==1 and weapon.nextattack==123)
+result.Hit=true;result.Entity=WORLD;WORLD.valid=false;result.HitWorld=true
+hook.Run('DoAnimationEvent',p,PLAYERANIMEVENT_ATTACK_PRIMARY);assert(animations==1)
+result.Entity=a
+hook.Run('DoAnimationEvent',p,PLAYERANIMEVENT_ATTACK_PRIMARY);assert(animations==2)
+SP.RawTraceLine=function() return {Hit=true,Entity=prop()} end
+hook.Run('DoAnimationEvent',p,PLAYERANIMEVENT_ATTACK_PRIMARY);assert(animations==2)
+''', ('' if realm == 'server' else 'CLIENT=true;SERVER=false\n') + modules['melee'])
+    test('F-T51', 'A remote kill retains its hit animation without tracing through the removed target', melee_fixture + r'''
+local animations=0
+function weapon:SendWeaponAnim() animations=animations+1 end
+assert(SP.RelayPortalMelee(a,d,Vector(0,0,-1),first))
+target.valid=false
+SP.TracePortalLine=function() error('hit result was lost') end
+SP.RawTraceLine=function() error('native impact was lost') end
+hook.Run('DoAnimationEvent',p,PLAYERANIMEVENT_ATTACK_PRIMARY)
+assert(animations==0 and hits==1)
 ''', modules['traces'] + modules['melee'])
     rpg_fixture = r'''
 local SP=SeamlessPortals;local a,b=pair();local p=player();local weapon=prop()

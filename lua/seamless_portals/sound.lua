@@ -56,6 +56,7 @@ local message = "SEAMLESS_PORTALS_SPATIAL_SOUND_V2"
 if SERVER then
     util.AddNetworkString(message)
     hook.Add("EntityEmitSound", "seamless_portals_detour_sound", function(event)
+        if SP.SuppressPortalMeleeSound and SP.SuppressPortalMeleeSound(event) then return false end
         local t=SP.NormalizeSoundEvent(event)
         if SP.IsNativeFireLoop and SP.IsNativeFireLoop(t) then return end
         if not permitted(t) then return end
@@ -157,6 +158,7 @@ net.Receive(message,function()
     SP.PlayPortalSound(path,source,t)
 end)
 hook.Add("EntityEmitSound","seamless_portals_detour_sound",function(event)
+    if SP.SuppressPortalMeleeSound and SP.SuppressPortalMeleeSound(event) then return false end
     local t=SP.NormalizeSoundEvent(event)
     if SP.IsNativeFireLoop and SP.IsNativeFireLoop(t) then return end
     if not enabled:GetBool() or not permitted(t) then return end

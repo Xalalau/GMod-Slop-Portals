@@ -65,7 +65,6 @@ local server_only = {
     ["seamless_portals/carry.lua"] = true,
     ["seamless_portals/held_proxy.lua"] = true,
     ["seamless_portals/physgun_pickup.lua"] = true,
-    ["seamless_portals/melee.lua"] = true,
     ["seamless_portals/npc_awareness.lua"] = true,
     ["seamless_portals/npc_navigation.lua"] = true,
     ["seamless_portals/projectiles.lua"] = true,
@@ -94,7 +93,7 @@ assert(SP.ValidateSize(Vector(100, 100, 8)) and not SP.ValidateSize(Vector(0, 10
 assert(SP.AspectCompatibleSize(Vector(100, 50, 8), Vector(200, 100, 8)))
 assert(not SP.AspectCompatibleSize(Vector(100, 50, 8), Vector(100, 100, 8)))
 assert(SP.PatchSeriesCount == 94 and SP.CustomProposalCount == 15)
-for _, name in ipairs({"FeatureEnabled", "InAperture", "TracePortalLine", "PortalBulletCallback", "GetHeldRecord", "ApplyFunneling"}) do
+for _, name in ipairs({"FeatureEnabled", "InAperture", "TracePortalLine", "PortalBulletCallback", "GetHeldRecord", "ApplyFunneling", "SuppressPortalMeleeSound"}) do
     assert(isfunction(SP[name]), "Missing inherited RC2 API: " .. name)
 end
 if SERVER then
