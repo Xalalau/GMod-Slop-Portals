@@ -17,6 +17,15 @@ local paths = {
     "entities/seamless_portal_clone.lua",
     "entities/seamless_portal_cutout.lua",
     "seamless_portals/aperture.lua",
+    "seamless_portals/blasts.lua",
+    "seamless_portals/bullet_emitter.lua",
+    "seamless_portals/carry.lua",
+    "seamless_portals/crossing.lua",
+    "seamless_portals/held_proxy.lua",
+    "seamless_portals/melee.lua",
+    "seamless_portals/projectiles.lua",
+    "seamless_portals/rpg_guidance.lua",
+    "seamless_portals/tracers.lua",
     "seamless_portals/bullets.lua",
     "seamless_portals/client_config.lua",
     "seamless_portals/core.lua",
@@ -37,6 +46,12 @@ local paths = {
     "weapons/portal_gun.lua",
 }
 local server_only = {
+    ["seamless_portals/blasts.lua"] = true,
+    ["seamless_portals/carry.lua"] = true,
+    ["seamless_portals/held_proxy.lua"] = true,
+    ["seamless_portals/melee.lua"] = true,
+    ["seamless_portals/projectiles.lua"] = true,
+    ["seamless_portals/rpg_guidance.lua"] = true,
     ["autorun/server/sv_portals_pvs.lua"] = true,
     ["entities/seamless_portal/init.lua"] = true,
     ["entities/seamless_portal_cutout.lua"] = true,
@@ -60,5 +75,9 @@ assert(SP.PatchSeriesCount == 94 and SP.CustomProposalCount == 15)
 for _, name in ipairs({"FeatureEnabled", "InAperture", "TracePortalLine", "PortalBulletCallback", "GetHeldRecord", "ApplyFunneling"}) do
     assert(isfunction(SP[name]), "Missing inherited RC2 API: " .. name)
 end
-if SERVER then assert(isfunction(SP.PlanTransport) and isfunction(SP.CommitTransport)) end
+if SERVER then
+    for _,name in ipairs({"PlanTransport","CommitTransport","SnapshotDamage","CopyDamage","RelayBlast","RelayPortalMelee","TransferProjectile","UpdateRPGGuidance"}) do
+        assert(isfunction(SP[name]),"Missing field API: "..name)
+    end
+end
 print("[Seamless Portals] Native GLua compile + pure smoke checks passed. Gameplay/rendering not tested.")
