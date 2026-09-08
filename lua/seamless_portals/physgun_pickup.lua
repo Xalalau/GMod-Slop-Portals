@@ -1,7 +1,16 @@
 -- Start a native physgun hold through a temporary selection handle.
--- Only the owned helper and its weld are created; original PhysObjs and constraints survive.
+-- Only the owned helper and its constraint are created; original PhysObjs and constraints survive.
 if not SERVER then return end
 local SP=SeamlessPortals
+local permissionPlayers=setmetatable({},{__mode="k"})
+function SP.CheckNativePickupPermission(ply,root)
+    local previous=permissionPlayers[root]
+    permissionPlayers[root]=ply
+    local ok,result=xpcall(function() return hook.Run("PhysgunPickup",ply,root) end,debug.traceback)
+    permissionPlayers[root]=previous
+    if not ok then ErrorNoHalt(tostring(result).."\n") return false end
+    return result==true
+end
 local function reach()
     local native=GetConVar("physgun_maxrange")
     local carry=GetConVar("seamless_portals_carry_reach")
@@ -30,7 +39,7 @@ local function pickup_plan(ply)
         mask=MASK_SHOT,SeamlessMaxHops=1,SeamlessFeature="props"})
     local segments=tr.SeamlessSegments
     local root,hit=tr.Entity,tr.HitPos
-    local entry,exit,alreadyFolded
+    local entry,exit,alreadyFolded,localNPC
     if segments and #segments==2 then
         entry=segments[1].Entity
         exit=SP.IsPortal(entry) and entry:GetExitPortal()
@@ -44,32 +53,45 @@ local function pickup_plan(ply)
         entry,exit=root:GetPortal2(),root:GetPortal1()
         hit=SP.TransformPortal(entry,exit,hit)
         root=root:GetChild()
+    elseif (not segments or #segments==1) and SP.IsLiveEntity(root) and root:IsNPC()
+        and root:GetMoveType()~=MOVETYPE_VPHYSICS then
+        localNPC=true
     else return end
-    if not SP.SupportsPropTraversal(entry,exit) or exit:GetExitPortal()~=entry then return end
+    if not localNPC and (not SP.SupportsPropTraversal(entry,exit) or exit:GetExitPortal()~=entry) then return end
     if not SP.IsLiveEntity(root) or root:IsPlayerHolding() or SP.HasTrackedHold(root) then return end
-    if root:GetClass()~="prop_physics" and root:GetClass()~="prop_physics_multiplayer" then return end
+    if root:GetClass()~="prop_physics" and root:GetClass()~="prop_physics_multiplayer" and not root:IsNPC() then return end
     local bone=tr.PhysicsBone or 0
+    if root:IsNPC() and root:GetPhysicsObjectCount()==1 then bone=0 end
     local phys=root:GetPhysicsObjectNum(bone)
     if not IsValid(phys) or phys:HasGameFlag(FVPHYSICS_PLAYER_HELD) then return end
     -- Run the actual target through Sandbox/CPPI and addon pickup permissions.
-    if hook.Run("PhysgunPickup",ply,root)~=true then return end
+    if not SP.CheckNativePickupPermission(ply,root) then return end
     if SP.GetHeldRecord(ply) or not SP.IsLiveEntity(root) or root:GetPhysicsObjectNum(bone)~=phys or root:IsPlayerHolding()
-        or not SP.SupportsPropTraversal(entry,exit) or exit:GetExitPortal()~=entry then return end
+        or (not localNPC and (not SP.SupportsPropTraversal(entry,exit) or exit:GetExitPortal()~=entry)) then return end
     local group=SP.CollectTransportGroup(root,ply)
     if not group or #group>=64 then return end
     local anchor=root:GetPos()
-    local target=alreadyFolded and anchor or SP.TransformPortal(exit,entry,anchor)
-    local function point(p) return alreadyFolded and Vector(p) or SP.RigidPoint(exit,entry,p,anchor,target) end
+    local target=(alreadyFolded or localNPC) and anchor or SP.TransformPortal(exit,entry,anchor)
+    local function point(p) return (alreadyFolded or localNPC) and Vector(p) or SP.RigidPoint(exit,entry,p,anchor,target) end
     local function angle(p,a)
-        if alreadyFolded then return Angle(a) end
+        if alreadyFolded or localNPC then return Angle(a) end
         local _,mapped=SP.TransformPortal(exit,entry,p,a)
         return mapped
     end
-    local plan={root=root,entry=exit,exit=entry,items={},tracePoint=segments and segments[1].HitPos or tr.HitPos}
+    local plan={root=root,entry=exit,exit=entry,items={},localNPC=localNPC,
+        tracePoint=not localNPC and segments and segments[1].HitPos or tr.HitPos}
+    if localNPC then
+        -- Native NPC selection hits the movement hull before the model hitboxes.
+        local hull=SP.RawTraceLine({start=start,endpos=start+ply:GetAimVector()*reach(),filter=ply,mask=MASK_SOLID})
+        if hull.Entity~=root then return end
+        local padding=Vector(8,8,8)
+        local boundary=util.IntersectRayWithOBB(start,ply:GetAimVector()*reach(),root:GetPos(),root:GetAngles(),root:OBBMins()-padding,root:OBBMaxs()+padding)
+        plan.tracePoint=boundary or hull.HitPos
+    end
     local sourcePoints,destinationPoints={},{}
     for _,ent in ipairs(group) do
         local owner=ent.SEAMLESS_PORTALS_CUTOUT
-        if owner and (not IsValid(owner) or owner:GetPortal()~=(alreadyFolded and entry or exit)) then return end
+        if owner and (not IsValid(owner) or (not localNPC and owner:GetPortal()~=(alreadyFolded and entry or exit))) then return end
         local newangle=angle(ent:GetPos(),ent:GetAngles())
         local item={entity=ent,pos=Vector(ent:GetPos()),ang=Angle(ent:GetAngles()),owner=owner,bodies={},
             newpos=point(ent:GetPos()),newang=newangle}
@@ -91,8 +113,8 @@ local function pickup_plan(ply)
     end
     -- Size admission is independent of the remote prop's lateral offset.
     -- RefreshCarry enforces its actual footprint when it reaches the frame.
-    if not SP.RemotePhysgunGroupFits(alreadyFolded and entry or exit,sourcePoints)
-        or not SP.RemotePhysgunGroupFits(entry,destinationPoints) then return end
+    if not localNPC and (not SP.RemotePhysgunGroupFits(alreadyFolded and entry or exit,sourcePoints)
+        or not SP.RemotePhysgunGroupFits(entry,destinationPoints)) then return end
     return plan,group,phys,phys:WorldToLocal(hit),bone
 end
 SP.NativePickupStates=SP.NativePickupStates or {}
@@ -109,6 +131,8 @@ local function remove_state(state,rollback)
    end
   end
   SP.EndCarryCorridor(state.record,false)
+ elseif state.record and not state.record.entry then
+  SP.ClearCarryState(state.record)
  end
  if IsValid(state.weld) then state.weld:Remove() end
  if IsValid(state.ply) and state.ply:GetNWEntity('seamless_portals_native_physgun_handle')==state.handle then
@@ -132,6 +156,9 @@ local function remove_state(state,rollback)
    state.phys:EnableMotion(false)
   end
   state.handle:Remove()
+ end
+ if state.npcMoveType and SP.IsLiveEntity(state.plan.root) and state.plan.root:GetMoveType()==MOVETYPE_NONE then
+  state.plan.root:SetMoveType(state.npcMoveType)
  end
  if rollback then SP.RollbackTransport(state.plan) end
  if state.handle then SP.NativePickupStates[state.handle]=nil end
@@ -197,6 +224,10 @@ local function begin(ply)
  if not mesh then return end
  local state={ply=ply,plan=plan,phys=phys,group=group,bone=bone}
  local ok,err=xpcall(function()
+  if plan.root:IsNPC() and plan.root:GetMoveType()~=MOVETYPE_VPHYSICS then
+   state.npcMoveType=plan.root:GetMoveType()
+   plan.root:SetMoveType(MOVETYPE_NONE)
+  end
   for _,item in ipairs(plan.items) do
    if IsValid(item.owner) then item.owner:RemoveEntity(item.entity) end
    item.entity:SetPos(item.newpos) item.entity:SetAngles(item.newang)
@@ -216,13 +247,14 @@ local function begin(ply)
   handle:SetName('seamless_portals_native_physgun_handle')
   handle.SEAMLESS_PORTALS_NATIVE_PICKUP=state
   handle:GetPhysicsObject():SetMass(phys:GetMass()) handle:GetPhysicsObject():EnableMotion(false)
-  local weld=constraint.Weld(handle,plan.root,0,bone,0,true,false)
+  local weld=state.npcMoveType and constraint.NoCollide(handle,plan.root,0,bone) or constraint.Weld(handle,plan.root,0,bone,0,true,false)
   if not IsValid(weld) then error('native pickup weld failed') end
   state.weld=weld weld.DisableDuplicator=true
   group[#group+1]=handle
-  local record={entity=plan.root,controllerEntity=handle,kind='physgun',player=ply,crossed=true,nativePickup=state}
+  local record={entity=plan.root,controllerEntity=handle,kind='physgun',player=ply,group=group,
+   crossed=not plan.localNPC,nativePickup=state}
   state.record=record
-  if not SP.StartCarryCorridor(ply,record,plan.exit,group) then error('native pickup corridor failed') end
+  if not plan.localNPC and not SP.StartCarryCorridor(ply,record,plan.exit,group) then error('native pickup corridor failed') end
   record.contact=SP.CaptureCarryPose(group)
   state.flags=handle:GetSolidFlags() state.lo,state.hi=handle:GetCollisionBounds()
   local lo,hi=handle:WorldToLocal(plan.tracePoint)-Vector(2,2,2),handle:WorldToLocal(plan.tracePoint)+Vector(2,2,2)
@@ -233,6 +265,7 @@ local function begin(ply)
   handle:EnableCustomCollisions()
   state.hit=phys:LocalToWorld(grab) state.grab=grab
   handle:SetNWEntity('seamless_portals_native_target',plan.root)
+  handle:SetNWBool('seamless_portals_physgun_entity_grab',state.npcMoveType~=nil)
   handle.TestCollision=function(self,start,delta,isbox)
    return SP.NativePhysgunSelection(state,start,delta,isbox)
   end
@@ -254,7 +287,14 @@ hook.Add('PhysgunPickup','seamless_portals_native_physgun_pickup',function(ply,e
  local owner=SP.NativePickupTargets[ent]
  if owner and owner.permissionPlayer~=ply then return false end
  local state=ent.SEAMLESS_PORTALS_NATIVE_PICKUP
- if not state then return end
+ if not state then
+  -- Select a native physics handle before the first grab. The engine's NPC
+  -- controller otherwise clips every move against the uncut map wall.
+  if ent:IsNPC() and ent:GetMoveType()~=MOVETYPE_VPHYSICS
+   and IsValid(ent:GetPhysicsObject()) and not owner and permissionPlayers[ent]~=ply
+   and not SP.WantsPortalPhysgun(ply) then return false end
+  return
+ end
  if state.ply~=ply or state.confirmed then return false end
  state.permissionPlayer=ply
  local ok,result=xpcall(function() return hook.Run('PhysgunPickup',ply,state.plan.root) end,debug.traceback)
@@ -274,6 +314,15 @@ end)
 hook.Add('Think','seamless_portals_native_physgun_pickup',function()
  for _,state in pairs(SP.NativePickupStates) do
   local handle=state.handle
+  if state.confirmed and state.npcMoveType and SP.IsLiveEntity(state.plan.root)
+   and IsValid(handle) and handle:IsPlayerHolding() then
+   -- NPCs use a movement hull, not a dynamic VPhysics body. Follow the native
+   -- handle while their motor waits; keep their original shadow body intact.
+   local root=state.plan.root
+   root:SetPos(handle:GetPos()) root:SetAngles(handle:GetAngles())
+   local body=root:GetPhysicsObject()
+   if IsValid(body) then body:SetPos(handle:GetPos(),true) body:SetAngles(handle:GetAngles()) end
+  end
   if state.confirmed and (not IsValid(state.ply) or not SP.IsLiveEntity(state.plan.root) or not IsValid(handle)) then
    SP.ClearHold(state.ply,state.plan.root)
   end

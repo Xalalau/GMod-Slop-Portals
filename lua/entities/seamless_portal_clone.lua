@@ -18,6 +18,7 @@ end
 
 -- Only the clone that installed this clip plane may release it.
 function ENT:ReleaseChildClip()
+    if CLIENT then self:ReleaseNPCWeaponClip() end
     local child = self.SEAMLESS_PORTALS_CLIPPED_CHILD or self:GetChild()
     if IsValid(child) and child.SEAMLESS_PORTALS_CLIP_OWNER == self then
         child.SEAMLESS_PORTALS_CLIP_OWNER = nil
@@ -71,6 +72,14 @@ function ENT:Think()
     child.SEAMLESS_PORTALS_CLIP_OWNER = self
     child:SetRenderClipPlaneEnabled(true)
 	child:SetRenderClipPlane(clip_up1, clip_up1:Dot(clip_pos1))
+    local weapon=child:IsNPC() and child:GetActiveWeapon()
+    if weapon~=self.SEAMLESS_PORTALS_NPC_WEAPON then self:ReleaseNPCWeaponClip() end
+    if IsValid(weapon) then
+        self.SEAMLESS_PORTALS_NPC_WEAPON=weapon
+        weapon.SEAMLESS_PORTALS_CLIP_OWNER=self
+        weapon:SetRenderClipPlaneEnabled(true)
+        weapon:SetRenderClipPlane(clip_up1,clip_up1:Dot(clip_pos1))
+    end
 
 	local clip_up2 = portal2:GetUp()
     local clip_pos2 = portal2:GetPos()
@@ -321,7 +330,59 @@ if SERVER then
         if IsValid(child) and child.SEAMLESS_PORTALS_CLONE==self then child.SEAMLESS_PORTALS_CLONE=nil end
     end
 else
+    function ENT:ReleaseNPCWeaponClip()
+        local weapon=self.SEAMLESS_PORTALS_NPC_WEAPON
+        if IsValid(weapon) and weapon.SEAMLESS_PORTALS_CLIP_OWNER==self then
+            weapon.SEAMLESS_PORTALS_CLIP_OWNER=nil
+            weapon:SetRenderClipPlaneEnabled(false)
+        end
+        self.SEAMLESS_PORTALS_NPC_WEAPON=nil
+    end
+    function ENT:ReleaseNPCVisual()
+        local visual=self.SEAMLESS_PORTALS_NPC_VISUAL
+        if not visual then return end
+        for _,model in ipairs(visual.models) do if IsValid(model) then model:Remove() end end
+        self.SEAMLESS_PORTALS_NPC_VISUAL=nil
+    end
+    function ENT:Draw()
+        local SP=SeamlessPortals
+        local child,exit=self:GetChild(),self:GetPortal2()
+        if not IsValid(child) or not child:IsNPC() or not SP.CopyNPCVisualModel then
+            self:DrawModel()
+            return
+        end
+        if not SP.IsUsableLink(self:GetPortal1(),exit) or (SP.NPCTransitions and SP.NPCTransitions[child]) then return end
+        local weapon=child:GetActiveWeapon()
+        local visual=self.SEAMLESS_PORTALS_NPC_VISUAL
+        if visual and (visual.child~=child or visual.name~=child:GetModel() or visual.weapon~=weapon) then
+            self:ReleaseNPCVisual() visual=nil
+        end
+        local clipping,pushed=render.EnableClipping(true),false
+        local ok,err=xpcall(function()
+            if not visual then
+                visual={child=child,name=child:GetModel(),weapon=weapon,models={}}
+                self.SEAMLESS_PORTALS_NPC_VISUAL=visual
+                local model=SP.CopyNPCVisualModel(child,nil,visual.models)
+                if not IsValid(model) then self:ReleaseNPCVisual() return end
+                if IsValid(weapon) then SP.CopyNPCVisualModel(weapon,model,visual.models) end
+            end
+            local model=visual.models[1]
+            SP.CopyNPCVisualPose(child,model)
+            local pos,ang=SP.TransformPortal(self:GetPortal1(),exit,child:GetPos(),child:GetAngles())
+            model:SetPos(pos) model:SetAngles(ang)
+            local normal=exit:GetUp()
+            render.PushCustomClipPlane(normal,normal:Dot(exit:GetPos())) pushed=true
+            for _,copy in ipairs(visual.models) do
+                if IsValid(copy) then copy:InvalidateBoneCache() copy:SetupBones() copy:DrawModel() end
+            end
+            render.PopCustomClipPlane() pushed=false
+        end,debug.traceback)
+        if pushed then render.PopCustomClipPlane() end
+        render.EnableClipping(clipping)
+        if not ok then self:ReleaseNPCVisual() ErrorNoHalt("[Seamless Portals] NPC carry view: "..tostring(err).."\n") end
+    end
     function ENT:OnRemove()
+        self:ReleaseNPCVisual()
         self:ReleaseChildClip()
 	end
 end

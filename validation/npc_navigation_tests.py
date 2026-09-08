@@ -14,7 +14,7 @@ def main(root, output):
     def source(path):
         return "\ndo\n" + normalize((root / path).read_text()) + "\nend\n"
 
-    for name in ("core", "features", "aperture", "crossing"):
+    for name in ("core", "features", "aperture", "crossing", "holding"):
         base += source(f"lua/seamless_portals/{name}.lua")
     transform = (root / "lua/entities/seamless_portal/sh_init.lua").read_text()
     transform = transform[transform.index("SeamlessPortals.TransformPortal = function"):]
@@ -191,6 +191,43 @@ local function transition()
 end
 """ + source("lua/seamless_portals/npc_transition.lua")
     cases = [
+        ("N-T39", "The held NPC exit copy keeps its animation and bone-merged weapon without moving the source", visual + "\nENT={}\n" + source("lua/entities/seamless_portal_clone.lua") + r"""
+EF_BONEMERGE=1
+npc.weapon=prop();appearance(npc.weapon)
+npc.sequence=4;npc.cycle=.375
+local before=Vector(npc:GetPos())
+local clone=prop()
+for key,value in pairs(ENT) do clone[key]=value end
+function clone:GetChild() return npc end
+function clone:GetPortal1() return a end
+function clone:GetPortal2() return b end
+clone:Draw()
+local visual=assert(clone.SEAMLESS_PORTALS_NPC_VISUAL)
+assert(#visual.models==2 and #draws==2)
+assert(visual.models[2].parent==visual.models[1] and visual.models[2].effects==EF_BONEMERGE)
+assert(draws[1].sequence==4 and draws[1].cycle==.375)
+nearvec(draws[1].pos,(SP.TransformPortal(a,b,before)))
+assert(visual.models[1].ik==false and visual.models[2].ik==false)
+assert(npc:GetSequence()==4 and npc:GetCycle()==.375);nearvec(npc:GetPos(),before)
+assert(not render.clipping and #render.planes==0)
+visual.models[1].fail_draw=true
+clone:Draw()
+assert(not clone.SEAMLESS_PORTALS_NPC_VISUAL)
+for _,model in ipairs(visual.models) do assert(not IsValid(model)) end
+assert(not render.clipping and #render.planes==0)
+fail_material=true
+clone:Draw()
+assert(not clone.SEAMLESS_PORTALS_NPC_VISUAL)
+for _,model in ipairs(models) do assert(not IsValid(model)) end
+assert(not render.clipping and #render.planes==0)
+"""),
+        ("N-T38", "Native navigation yields to a confirmed NPC physgun hold", r"""
+SP.RecordHold(target,npc,'physgun')
+assert(not SP.FindNPCPortalRoute(npc,target))
+assert(not SP.UpdateNPCNavigation(npc,{target}) and npc.schedule_writes==0)
+SP.ClearHold(target,npc)
+assert(SP.FindNPCPortalRoute(npc,target))
+"""),
         ("N-T01", "Select a shorter walkable route without restarting the native schedule", r"""
 local r=start();assert(r.entry==a and r.exit==b)
 assert(npc.schedule==SCHED_FORCED_GO_RUN and npc.schedule_writes==1)

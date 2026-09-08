@@ -10,6 +10,7 @@ function CurTime() return NOW end
 function RealTime() return NOW end
 engine={TickCount=function() return TICK end,TickInterval=function() return DT end}
 MOVETYPE_WALK,MOVETYPE_NOCLIP,MASK_SOLID,CHAN_AUTO,SND_STOP,RENDERGROUP_OPAQUE=2,8,2,0,4,0
+MOVETYPE_VPHYSICS=6
 CONTENTS_SOLID,CONTENTS_MOVEABLE,CONTENTS_MONSTER,CONTENTS_WINDOW,CONTENTS_DEBRIS,CONTENTS_GRATE,CONTENTS_AUX=1,2,4,8,16,32,64
 bit.bor=function(...) local n=0 for _,v in ipairs({...}) do n=n|v end return n end
 bit.band=function(a,b) return a&b end
@@ -33,6 +34,7 @@ function portal(size,sides)
  function e:WorldToLocalAngles(a) return Angle(a) end
  function e:LocalToWorldAngles(a) return Angle(a) end
  function e:IsPlayer() return false end
+ function e:IsNPC() return false end
  function e:IsWorld() return false end
  function e:TriggerOutput(name,ent) self.outputs=self.outputs or {};table.insert(self.outputs,{name,ent}) end
  function e:GetParent() return NULL end

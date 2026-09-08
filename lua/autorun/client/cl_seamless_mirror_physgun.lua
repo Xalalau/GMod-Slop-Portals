@@ -54,8 +54,8 @@ local function aiming_segments(ply)
     aimCache[ply]={frame=FrameNumber(),segments=segments}
     return segments
 end
-local function held_segments(ply,target,bone,grab)
-    local matrix=target:GetBoneMatrix(target:TranslatePhysBoneToBone(bone))
+local function held_segments(ply,target,bone,grab,entityFrame)
+    local matrix=not entityFrame and target:GetBoneMatrix(target:TranslatePhysBoneToBone(bone))
     local hit=matrix and LocalToWorld(grab,angle_zero,matrix:GetTranslation(),matrix:GetAngles()) or target:LocalToWorld(grab)
     local start=ply:EyePos()
     local entry=target:GetNWEntity("seamless_portals_clip_entry")
@@ -75,11 +75,12 @@ local function held_segments(ply,target,bone,grab)
 end
 function SP.NativePhysgunSegments(ply)
     if not IsValid(ply) then return end
-    if not IsValid(ply:GetNWEntity("seamless_portals_native_physgun_handle")) then return aiming_segments(ply) end
+    local handle=ply:GetNWEntity("seamless_portals_native_physgun_handle")
+    if not IsValid(handle) then return aiming_segments(ply) end
     local target=ply:GetNWEntity("seamless_portals_held")
     if not IsValid(target) then return end
     return held_segments(ply,target,ply:GetNWInt("seamless_portals_physgun_bone",0),
-        ply:GetNWVector("seamless_portals_physgun_grab"))
+        ply:GetNWVector("seamless_portals_physgun_grab"),handle:GetNWBool("seamless_portals_physgun_entity_grab",false))
 end
 local ordinaryGrips=setmetatable({},{__mode="k"})
 function SP.NativePhysgunExitSegments(ply)

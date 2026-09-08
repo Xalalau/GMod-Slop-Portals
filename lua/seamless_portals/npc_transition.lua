@@ -83,6 +83,18 @@ local function copyModel(entity, parent, models)
     end
     return model
 end
+SP.CopyNPCVisualModel = copyModel
+
+function SP.CopyNPCVisualPose(npc, model)
+    model:SetSequence(npc:GetSequence())
+    model:SetCycle(npc:GetCycle())
+    model:SetPlaybackRate(0)
+    for i = 0, math.min(npc:GetNumPoseParameters(), 24) - 1 do
+        local name = npc:GetPoseParameterName(i)
+        local lo, hi = npc:GetPoseParameterRange(i)
+        model:SetPoseParameter(name, Lerp(npc:GetPoseParameter(name), lo, hi))
+    end
+end
 
 local function blendBones(model, r, count)
     if not r.nativeBones or not r.blend or r.blend <= 0 then return end
@@ -184,16 +196,13 @@ function SP.DrawNPCTransition(npc, r)
     local model = r.models[1]
     local clipping, pushed = render.EnableClipping(true), false
     local ok, err = xpcall(function()
+        SP.CopyNPCVisualPose(npc, model)
         if r.animation then
             r.distance = r.offset:Length2D() * math.max(elapsed / r.duration, 0)
             local phase = (r.animation.cycle + r.distance / r.animation.distance) % 1
             model:SetSequence(r.animation.sequence)
             model:SetCycle(phase % 1)
-        else
-            model:SetSequence(npc:GetSequence())
-            model:SetCycle(npc:GetCycle())
         end
-        model:SetPlaybackRate(0)
         -- Blend to the engine's actual resumed pose, including a different
         -- walk sequence. Only the visual copy receives transformed bones.
         r.nativeBones = nil
@@ -207,11 +216,6 @@ function SP.DrawNPCTransition(npc, r)
                     r.nativeBones[i] = {position = pos, angle = ang, scale = matrix:GetScale()}
                 end
             end
-        end
-        for i = 0, math.min(npc:GetNumPoseParameters(), 24) - 1 do
-            local name = npc:GetPoseParameterName(i)
-            local lo, hi = npc:GetPoseParameterRange(i)
-            model:SetPoseParameter(name, Lerp(npc:GetPoseParameter(name), lo, hi))
         end
         for _, pose in ipairs({{r.entry, source, sourceAngle}, {r.exit, position, angle}}) do
             local normal = pose[1]:GetUp()

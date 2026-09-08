@@ -71,7 +71,8 @@ function SP.DrainCarryReleases()
     SP.CarryReleased={}
     for _,record in ipairs(pending) do
         local root=record.entity
-        if SP.IsLiveEntity(root) and not root:IsPlayerHolding() and SP.IsUsableLink(record.entry,record.exit) then
+        local held=SP.IsLiveEntity(root) and (root:IsPlayerHolding() or SP.HasTrackedHold(root))
+        if SP.IsLiveEntity(root) and not held and SP.IsUsableLink(record.entry,record.exit) then
             local footprint=SP.PortalOBB(record.entry,root)
             if footprint.hi.z<0 then
                 local plan,reason=SP.PlanTransport(root,record.entry,record.exit)
@@ -92,7 +93,7 @@ function SP.DrainCarryReleases()
                 -- Still straddling: release to the ordinary physical crossing path.
                 SP.ClearCarryState(record)
             end
-        elseif SP.IsLiveEntity(root) and root:IsPlayerHolding() then
+        elseif held then
             -- A genuine new pickup owns it; never teleport out of that controller.
             SP.ClearCarryState(record)
         else

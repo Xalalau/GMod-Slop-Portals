@@ -14,6 +14,7 @@ local world_up = Vector(0, 0, 1)
 local function allowed(npc)
     local disabled = GetConVar("ai_disabled")
     return enabled:GetBool() and SP.IsLiveEntity(npc) and npc:IsNPC()
+        and not SP.HasTrackedHold(npc)
         and not npc:IsScripted() and npc:Health() > 0
         and npc:GetNPCState() ~= NPC_STATE_SCRIPT and npc:GetMoveType() == MOVETYPE_STEP
         and bit.band(npc:CapabilitiesGet(), CAP_MOVE_GROUND) ~= 0

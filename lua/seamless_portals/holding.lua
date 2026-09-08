@@ -61,8 +61,12 @@ function SP.GetHeldRecord(ply)
     end
     local record=SP.Holds[ply]
     local controller=record and (record.controllerEntity or record.entity)
+    -- Native non-VPhysics NPC grabs never set IsPlayerHolding. Their confirmed
+    -- pickup/drop hooks own the lifetime instead of the physics held flag.
+    local nativeNPC=record and record.kind=="physgun" and IsValid(controller)
+        and controller:IsNPC() and controller:GetMoveType()~=MOVETYPE_VPHYSICS
     if record and (not SP.IsLiveEntity(record.entity)
-        or not IsValid(controller) or (engine.TickCount()>record.tick+1 and not controller:IsPlayerHolding())) then
+        or not IsValid(controller) or (not nativeNPC and engine.TickCount()>record.tick+1 and not controller:IsPlayerHolding())) then
         SP.ClearHold(ply) return
     end
     return record
@@ -129,8 +133,7 @@ if SERVER then
         SP.CarryAudit[ply]=audit
         timer.Simple(0,function()
             if SP.CarryAudit[ply]~=audit or not IsValid(ply) then return end
-            local controller=hold.controllerEntity or hold.entity
-            audit.native_hold=IsValid(controller) and controller:IsPlayerHolding() and "retained" or "released"
+            audit.native_hold=SP.GetHeldRecord(ply)==hold and "retained" or "released"
             audit.physics_identity=true
             for _,body in ipairs(audit.bodies) do
                 if not IsValid(body.entity) or body.entity:GetPhysicsObjectNum(body.index)~=body.phys then audit.physics_identity=false end

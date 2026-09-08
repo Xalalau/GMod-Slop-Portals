@@ -19,6 +19,76 @@ local keys={}
 function p:KeyDown(key) return keys[key]==true end
 """
     cases = [
+        ("npc-permission-query", "NPC handle selection preserves target permissions without recording a speculative hold", """
+local SP=SeamlessPortals
+function e:IsNPC() return true end
+function e:GetMoveType() return 3 end
+assert(hook.Run('PhysgunPickup',p,e)==false)
+local raw=hook.Run
+local veto=false
+hook.Run=function(event,ply,ent)
+ local result=raw(event,ply,ent)
+ if result~=nil then return result end
+ return not veto
+end
+assert(SP.CheckNativePickupPermission(p,e))
+assert(hook.Run('PhysgunPickup',p,e)==false)
+veto=true
+assert(not SP.CheckNativePickupPermission(p,e))
+assert(not SP.GetHeldRecord(p))
+hook.Run=raw
+function e:GetMoveType() return MOVETYPE_VPHYSICS end
+assert(hook.Run('PhysgunPickup',p,e)==nil)
+"""),
+        ("npc-handle-release", "A released NPC restores its motor and removes only the temporary handle and constraint", """
+local SP=SeamlessPortals
+MOVETYPE_NONE=0
+local handle,link=prop(),prop()
+local mode=0
+function e:GetMoveType() return mode end
+function e:SetMoveType(v) mode=v end
+local record={entity=e,group={e,handle}}
+local state={plan={root=e},record=record,handle=handle,weld=link,ply=p,confirmed=true,npcMoveType=3}
+record.nativePickup=state
+SP.NativePickupStates[handle]=state;SP.NativePickupTargets[e]=state
+local physics=e:GetPhysicsObject()
+SP.ClearCarryState=function(r) assert(r==record);r.group=nil end
+hook.Run('Think')
+assert(mode==3 and e:GetPhysicsObject()==physics)
+assert(not IsValid(handle) and not IsValid(link))
+assert(not SP.NativePickupStates[handle] and not SP.NativePickupTargets[e])
+"""),
+        ("native-npc-hold", "Confirmed non-VPhysics NPC grabs remain tracked until the native drop hook", """
+local SP=SeamlessPortals
+function e:IsNPC() return true end
+function e:GetMoveType() return 3 end
+assert(not e:IsPlayerHolding())
+hook.Run('OnPhysgunPickup',p,e)
+TICK=TICK+5
+assert(SP.GetHeldRecord(p).entity==e)
+hook.Run('PhysgunDrop',p,e)
+assert(SP.GetHeldRecord(p)==nil and not SP.HasTrackedHold(e))
+function e:GetMoveType() return MOVETYPE_VPHYSICS end
+hook.Run('OnPhysgunPickup',p,e)
+TICK=TICK+5
+assert(SP.GetHeldRecord(p)==nil)
+"""),
+        ("npc-beam-grip", "NPC beams use the shadow body's frame instead of the animated pelvis bone", """
+CLIENT=true;SERVER=false
+function Material() return {} end
+local handle=prop()
+handle:SetNWBool('seamless_portals_physgun_entity_grab',true)
+p:SetNWEntity('seamless_portals_native_physgun_handle',handle)
+p:SetNWEntity('seamless_portals_held',e)
+function p:GetNWInt() return 0 end
+function p:GetNWVector() return Vector(1,2,30) end
+function p:EyePos() return Vector(0,0,64) end
+function e:GetBoneMatrix() error('NPC shadow grip must not use animated bones') end
+function e:GetNWEntity() return NULL end
+""" + normalize((root / "lua/autorun/client/cl_seamless_mirror_physgun.lua").read_text()) + """
+local path=SeamlessPortals.NativePhysgunSegments(p)
+assert(#path==1 and path[1].finish:DistToSqr(e:LocalToWorld(Vector(1,2,30)))<0.0001)
+"""),
         ("portal-view-muzzle", "The exit view keeps the main viewmodel muzzle even when it renders the local avatar", """
 CLIENT=true;SERVER=false
 function Material() return {} end
