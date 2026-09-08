@@ -233,6 +233,8 @@ hook.Add("RenderScene", "seamless_portals_draw", function(eye_pos, eye_ang, fov)
 			push_target(framebuffer)
 			SeamlessPortals.Rendering = exit_portal
             SeamlessPortals.PortalVirtualEye=Vector(new_pos)
+            SeamlessPortals.PortalVirtualAngles=Angle(new_ang)
+            SeamlessPortals.PortalViewFOV=fov
             SeamlessPortals.PortalSkySeen=false
 			portal.SEAMLESS_PORTALS_RENDERED = true
 			render_scene()
@@ -267,6 +269,8 @@ hook.Add("RenderScene", "seamless_portals_draw", function(eye_pos, eye_ang, fov)
     pop_cams()
     SeamlessPortals.Rendering = previous_rendering
     SeamlessPortals.PortalVirtualEye=nil
+    SeamlessPortals.PortalVirtualAngles=nil
+    SeamlessPortals.PortalViewFOV=nil
     SeamlessPortals.PortalSkySeen=nil
     while target_depth > 0 do pop_target() end
     if main_camera then cam.End3D() end
