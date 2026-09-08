@@ -4,6 +4,8 @@ AddCSLuaFile()
 -- Shared, dynamically owned trace compatibility layer (C03).
 AddCSLuaFile("seamless_portals/traces.lua")
 include("seamless_portals/traces.lua")
+AddCSLuaFile("seamless_portals/tool_effects.lua")
+include("seamless_portals/tool_effects.lua")
 AddCSLuaFile("seamless_portals/tracers.lua")
 include("seamless_portals/tracers.lua")
 AddCSLuaFile("seamless_portals/bullet_emitter.lua")

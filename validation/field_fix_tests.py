@@ -295,6 +295,45 @@ data.IgnoreEntity=foreign
 SP.PortalBulletCallback(p,data,nil,0)(p,tr,d)
 assert(captured.IgnoreEntity==foreign)
 ''', modules['traces'] + modules['bullets'])
+    tool_fixture = r'''
+local SP=SeamlessPortals;local a,b=pair();local p=player();local weapon=prop()
+function weapon:GetClass() return 'gmod_tool' end
+weapon.owner=p
+function p:GetShootPos() return Vector(0,0,30) end
+function p:GetAimVector() return Vector(0,0,-1) end
+local emitted={}
+function EffectData()
+ local e={}
+ for _,name in ipairs({'Origin','Start','Entity','Attachment'}) do
+  e['Set'..name]=function(self,v) self[name]=v end
+  e['Get'..name]=function(self) return self[name] end
+ end
+ return e
+end
+util.Effect=function(name,data,flag) emitted[#emitted+1]={name=name,data=data,flag=flag} end
+local effect=EffectData();effect:SetEntity(weapon);effect:SetAttachment(1);effect:SetStart(p:GetShootPos());effect:SetOrigin(Vector(200,0,20))
+local segments={{StartPos=p:GetShootPos(),HitPos=Vector()},{StartPos=Vector(200,0,.05),HitPos=effect:GetOrigin()}}
+SP.TracePortalLine=function() return {HitPos=effect:GetOrigin(),SeamlessSegments=segments} end
+'''
+    test('F-T20', 'Tool feedback splits at the portal and keeps the muzzle attachment on the first leg', tool_fixture + src('lua/seamless_portals/tool_effects.lua') + r'''
+util.Effect('ToolTracer',effect,true)
+assert(#emitted==2 and emitted[1].flag==true and emitted[2].flag==true)
+nearvec(emitted[1].data:GetOrigin(),Vector())
+nearvec(emitted[2].data:GetStart(),Vector(200,0,.05))
+assert(emitted[1].data:GetEntity()==weapon and emitted[1].data:GetAttachment()==1)
+assert(emitted[2].data:GetEntity()==nil and effect:GetEntity()==weapon)
+nearvec(effect:GetOrigin(),Vector(200,0,20))
+''')
+    test('F-T21', 'Tool effect adapter preserves unrelated effects and reload ownership', tool_fixture + src('lua/seamless_portals/tool_effects.lua') + r'''
+local owned=util.Effect
+''' + src('lua/seamless_portals/tool_effects.lua') + r'''
+assert(util.Effect==owned)
+util.Effect('Impact',effect,false);assert(#emitted==1 and emitted[1].data==effect)
+SP.TracePortalLine=function() return {HitPos=Vector(0,0,50)} end
+util.Effect('ToolTracer',effect,true);assert(#emitted==2 and emitted[2].data==effect)
+local foreign=function() end;util.Effect=foreign
+hook.Run('ShutDown');assert(util.Effect==foreign)
+''')
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
                   failed=sum(r['status'] == 'FAIL' for r in results))
