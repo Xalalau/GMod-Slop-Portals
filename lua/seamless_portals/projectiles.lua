@@ -65,7 +65,11 @@ function SP.TransferProjectile(ent,dt,record)
     local phys=ent:GetPhysicsObject()
     local velocity=IsValid(phys) and phys:GetVelocity() or ent:GetVelocity()
     if not SP.FiniteVector(velocity) or velocity:LengthSqr()<1 then return false end
-    local hit=SP.ProjectileCrossing(ent,velocity*math.Clamp(dt or engine.TickInterval(),0,0.05))
+    local step=math.Clamp(dt or engine.TickInterval(),0,0.05)
+    -- Frag VPhysicsUpdate raycasts one more step after physics moves it and
+    -- bounces off the portal before our next Tick. Cover both steps up front.
+    if ent:GetClass()=="npc_grenade_frag" then step=step*2 end
+    local hit=SP.ProjectileCrossing(ent,velocity*step)
     if not hit then return false end
     local entry,exit=hit.entry,hit.exit
     -- A wall or prop BEFORE the aperture still blocks the real projectile.

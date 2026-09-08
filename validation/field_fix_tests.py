@@ -872,6 +872,65 @@ end
 hook.Run('Think');assert(calls==8 and not saw_last)
 NOW=NOW+.2;hook.Run('Think');assert(calls==16 and saw_last)
 ''')
+    grenade_fixture = r'''
+local SP=SeamlessPortals;local a,b=pair()
+local e=prop(Vector(0,0,25));local phys=e:GetPhysicsObject()
+function e:GetClass() return 'npc_grenade_frag' end
+phys.vel=Vector(100,0,-1000)
+local initial=e:GetPos();local velocity=Vector(phys.vel)
+SP.RawTraceLine=function() return {Hit=false,StartSolid=false,AllSolid=false,Fraction=1} end
+'''
+    test('F-T42', 'Fast frag transfers before its post-physics forward ray can bounce off the portal', grenade_fixture + r'''
+local owner=player();e.owner=owner
+local calls=0
+hook.Add('SeamlessPortalsProjectileTransferred','grenade_test',function(ent,entry,exit)
+ calls=calls+1;assert(ent==e and entry==a and exit==b)
+end)
+-- At 15 ms, physics stops in front, but the subsequent native ray crosses.
+assert(not SP.ProjectileCrossing(e,velocity*.015))
+assert(SP.PlaneCrossing(a,initial+velocity*.015,velocity*.015))
+assert(SP.TransferProjectile(e,.015))
+assert(e:GetPhysicsObject()==phys and e:GetOwner()==owner and calls==1)
+nearvec(phys.vel,SP.TransformDirection(a,b,velocity,false))
+assert(not SP.TransferProjectile(e,.015) and calls==1)
+''', modules['projectiles'])
+    test('F-T43', 'Frag lookahead retains source occlusion across the extra predicted step', grenade_fixture + r'''
+local wall=Vector(0,0,5)
+SP.RawTraceLine=function(data)
+ assert(data.SeamlessIgnore and data.start.z>wall.z and data.endpos.z<wall.z)
+ return {Hit=true,HitPos=wall,Fraction=.8}
+end
+assert(not SP.TransferProjectile(e,.015))
+assert(SP.FieldCounters.projectile_source_blocked==1)
+nearvec(e:GetPos(),initial);nearvec(phys.vel,velocity)
+''', modules['projectiles'])
+    test('F-T44', 'Frag lookahead refuses blocked exits without moving or consuming the grenade', grenade_fixture + r'''
+util.TraceHull=function() return {StartSolid=true,Hit=true} end
+assert(not SP.TransferProjectile(e,.015))
+assert(SP.FieldCounters.projectile_exit_blocked==1 and IsValid(e))
+nearvec(e:GetPos(),initial);nearvec(phys:GetPos(),initial);nearvec(phys.vel,velocity)
+''', modules['projectiles'])
+    test('F-T45', 'Frag prediction respects aperture edges, approach direction and endpoint switches', grenade_fixture + r'''
+e:SetPos(Vector(1000,0,25));assert(not SP.TransferProjectile(e,.015))
+e:SetPos(Vector(0,0,-5));assert(not SP.TransferProjectile(e,.015))
+e:SetPos(initial);phys.vel=-velocity;assert(not SP.TransferProjectile(e,.015));phys.vel=velocity
+for _,endpoint in ipairs({a,b}) do
+ SP.SetFeature(endpoint,'damage',false);assert(not SP.TransferProjectile(e,.015))
+ SP.SetFeature(endpoint,'damage',true)
+end
+GetConVar('seamless_portals_projectiles'):SetInt(0);assert(not SP.TransferProjectile(e,.015))
+GetConVar('seamless_portals_projectiles'):SetInt(1);assert(SP.TransferProjectile(e,.015))
+''', modules['projectiles'])
+    test('F-T46', 'Additional prediction is bounded and confined to native frag grenades', grenade_fixture + r'''
+for _,class in ipairs({'prop_combine_ball','rpg_missile','crossbow_bolt','grenade_ar2','grenade_helicopter'}) do
+ function e:GetClass() return class end
+ assert(not SP.TransferProjectile(e,.015),class)
+end
+function e:GetClass() return 'npc_grenade_frag' end
+e:SetPos(Vector(0,0,120));assert(not SP.TransferProjectile(e,100))
+e:SetPos(initial);assert(not SP.TransferProjectile(e,0))
+assert(SP.TransferProjectile(e,.015))
+''', modules['projectiles'])
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
                   failed=sum(r['status'] == 'FAIL' for r in results))
