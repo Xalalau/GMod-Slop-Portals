@@ -52,3 +52,17 @@ Earlier fixture attempts in that directory include probe errors and invalid
 geometry; they are not passing evidence. Large aircraft/striders, universal
 NextBots, special melee attacks and full multiplayer observation remain outside
 this acceptance claim.
+
+## Rollermine passage
+
+Rollermines now enter the physical cutout/clone path alongside loose physics
+objects. The original entity and native physics object survive transfer, so the
+mine continues its own pursuit controller on the exit side. Different-sized
+links refuse mine admission: generic prop rescaling rebuilds physics and cannot
+preserve this native controller. Ordinary prop scaling remains unchanged.
+
+A dedicated six-second native pursuit test recorded 60 samples, a portal
+transfer and continued pursuit/contact with the remote bot. Every sample kept
+the original physics object. The user also confirmed passage through equal-sized
+portals. Evidence is `roller_1.json` in the directory above; F-T36 covers class
+admission and the rescaling refusal with API doubles.

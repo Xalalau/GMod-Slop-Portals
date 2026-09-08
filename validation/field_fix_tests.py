@@ -625,6 +625,32 @@ SP.UpdateNPCAttention(npc,{target});assert(npc:Disposition(proxy)==D_HT)
 occluded=true;SP.UpdateNPCAttention(npc,{target})
 assert(not SP.NPCAttention[npc] and not IsValid(proxy))
 ''')
+    test('F-T36', 'Rollermine cutout admission retains native physics and refuses rescaling before collision edits',
+         src('lua/entities/seamless_portal_cutout.lua', 'local allowed_classes', 'local logic_collision_pair')
+         + src('lua/entities/seamless_portal_cutout.lua', 'function ENT:AddEntity', 'function ENT:RemoveEntity') + r'''
+local SP=SeamlessPortals
+local a,b=pair()
+local cutout=prop();cutout.ENTITIES={};cutout.SEAMLESS_PORTALS_READY=true
+function cutout:GetPortal() return a end
+function cutout:GetRotatedAABB(lo,hi) return lo,hi end
+function cutout:NextThink() end
+local mine=prop(Vector(0,0,1));local original=mine:GetPhysicsObject()
+function mine:GetClass() return 'npc_rollermine' end
+original:SetVelocity(Vector(0,0,-10))
+function ents.FindInBox() return {mine} end
+local collisions=0
+function set_collision() collisions=collisions+1;return true end
+restore_pending={}
+cutout.SEAMLESS_PORTALS_GEOMETRY=SP.CaptureGeometry(a)
+cutout:Think()
+assert(cutout.ENTITIES[mine] and mine.SEAMLESS_PORTALS_CUTOUT==cutout and collisions==2)
+assert(mine:GetPhysicsObject()==original)
+local second=prop();function second:GetClass() return 'npc_rollermine' end
+b.size=Vector(200,200,8)
+assert(not cutout:AddEntity(second) and not second.SEAMLESS_PORTALS_CUTOUT and collisions==2)
+local ordinary=prop()
+assert(cutout:AddEntity(ordinary) and collisions==4)
+''')
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
                   failed=sum(r['status'] == 'FAIL' for r in results))

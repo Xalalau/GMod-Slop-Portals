@@ -305,6 +305,7 @@ local allowed_classes = {
 	["prop_vehicle_prisoner_pod"] = true,
 	-- Native projectiles have a separate swept crossing adapter (F06).
     ["prop_physics_multiplayer"] = true,
+    ["npc_rollermine"] = true,
 }
 
 function ENT:Think()
@@ -442,6 +443,14 @@ function ENT:AddEntity(ent)
         or not self.SEAMLESS_PORTALS_READY or self.SEAMLESS_PORTALS_DEACTIVATING then return false end
 	if self.ENTITIES[ent] then return ent.SEAMLESS_PORTALS_CUTOUT == self end
 	if ent.SEAMLESS_PORTALS_CUTOUT then return false end
+	if ent:GetClass()=="npc_rollermine" then
+        local portal=self:GetPortal()
+        local exit=SeamlessPortals.IsPortal(portal) and portal:GetExitPortal()
+        if not SeamlessPortals.IsUsableLink(portal,exit) then return false end
+        local width,exit_width=portal:GetSize().x,exit:GetSize().x
+        -- Rescaling rebuilds physics and would destroy the native mine controller.
+        if math.abs(width-exit_width)>math.max(width,exit_width)*0.0001 then return false end
+    end
 	if constraint.HasConstraints(ent) and SeamlessPortals.CollectTransportGroup then
         local group = SeamlessPortals.CollectTransportGroup(ent, SeamlessPortals.HeldBy and SeamlessPortals.HeldBy(ent), true)
         if not group then return false end
