@@ -492,7 +492,7 @@ assert(calls<12)
 ''')
     npc_fixture = r'''
 local SP=SeamlessPortals
-D_HT,D_NU=1,4
+D_HT,D_FR,D_LI,D_NU=1,2,3,4
 NPC_STATE_IDLE,NPC_STATE_COMBAT,NPC_STATE_SCRIPT=1,3,5
 SCHED_RANGE_ATTACK1,SOLID_NONE=16,0
 COND={NEW_ENEMY=1,SEE_ENEMY=2,ENEMY_OCCLUDED=3}
@@ -515,6 +515,7 @@ local function native_npc(class)
  function e:GetNPCState() return self.state end
  function e:SetNPCState(v) self.state=v end
  function e:EyePos() return self:GetPos() end
+ function e:WorldSpaceCenter() return self:GetPos() end
  function e:IsInViewCone() return not self.outside_cone end
  function e:SetEyeTarget(v) self.eye_target=v end
  function e:Disposition(other) return self.relations[other] or D_HT end
@@ -602,7 +603,9 @@ assert(npc:GetEnemy()==other and not IsValid(proxy) and not SP.NPCAttention[npc]
     test('F-T34', 'NPC portal attention respects disposition, native FOV, scripts and disabled damage', npc_fixture + r'''
 local npc=native_npc('npc_turret_floor')
 npc:AddEntityRelationship(target,D_NU,99)
-SP.UpdateNPCAttention(npc,{target});assert(not SP.NPCAttention[npc])
+SP.UpdateNPCAttention(npc,{target})
+assert(SP.NPCAttention[npc] and npc:GetEnemy()==NULL)
+assert(npc:Disposition(SP.NPCAttention[npc].proxy)==D_NU and not npc.remembered)
 npc:AddEntityRelationship(target,D_HT,99);npc.outside_cone=true
 SP.UpdateNPCAttention(npc,{target});assert(not SP.NPCAttention[npc])
 npc.outside_cone=false;npc.scripted=true
@@ -650,6 +653,74 @@ b.size=Vector(200,200,8)
 assert(not cutout:AddEntity(second) and not second.SEAMLESS_PORTALS_CUTOUT and collisions==2)
 local ordinary=prop()
 assert(cutout:AddEntity(ordinary) and collisions==4)
+''')
+    test('F-T37', 'NPC enemies outrank nearby allies and remain visible when players are ignored', npc_fixture + r'''
+local npc=native_npc('npc_turret_floor')
+local ally=native_npc('npc_combine_s');ally:SetPos(Vector(200,0,15))
+local enemy=native_npc('npc_citizen');enemy:SetPos(Vector(200,0,50))
+npc:AddEntityRelationship(ally,D_LI,99);npc:AddEntityRelationship(enemy,D_HT,99)
+CreateConVar('ai_ignoreplayers','1')
+local found=assert(SP.FindNPCTarget(npc,{target,npc,ally,enemy}))
+assert(found.target==enemy and found.player==enemy)
+SP.UpdateNPCAttention(npc,{target,npc,ally,enemy})
+local r=assert(SP.NPCAttention[npc]);assert(r.target==enemy and r.player==enemy)
+local bullet={Src=Vector(0,0,25),Dir=Vector(1,0,0)}
+SP.AdjustNPCPortalBullet(npc,bullet);nearvec(bullet.Dir,Vector(0,0,-1))
+enemy.life=1
+hook.Run('Think');assert(not SP.NPCAttention[npc])
+''')
+    test('F-T38', 'Allied NPC stand-ins remain friendly and relationship changes restore native enemy ownership', npc_fixture + r'''
+local npc=native_npc('npc_combine_s');npc.weapon=prop()
+local other=native_npc('npc_citizen');other:SetPos(Vector(200,0,20))
+npc:AddEntityRelationship(other,D_LI,99)
+SP.UpdateNPCAttention(npc,{other})
+local friendly=assert(SP.NPCAttention[npc])
+assert(friendly.target==other and not friendly.hostile and friendly.player==nil)
+assert(npc:Disposition(friendly.proxy)==D_LI and npc:GetEnemy()==NULL)
+assert(not npc.remembered and not npc.schedule and npc.state==NPC_STATE_IDLE)
+npc:AddEntityRelationship(other,D_HT,99);SP.UpdateNPCAttention(npc,{other})
+local hostile=assert(SP.NPCAttention[npc])
+assert(hostile.hostile and npc:GetEnemy()==hostile.proxy and not IsValid(friendly.proxy))
+npc:AddEntityRelationship(other,D_LI,99);SP.UpdateNPCAttention(npc,{other})
+assert(not SP.NPCAttention[npc].hostile and npc:GetEnemy()==NULL and not IsValid(hostile.proxy))
+''')
+    test('F-T39', 'Awareness scheduler discovers other NPCs without players and excludes itself and proxy targets', npc_fixture + r'''
+player.GetAll=function() return {} end
+local npc=native_npc('npc_turret_floor')
+local other=native_npc('npc_turret_floor');other:SetPos(Vector(200,0,20))
+hook.Run('OnEntityCreated',npc);hook.Run('OnEntityCreated',other)
+hook.Run('Think')
+assert(SP.NPCAttention[npc] and SP.NPCAttention[npc].target==other)
+assert(SP.FindNPCTarget(npc,{npc,SP.NPCAttention[npc].proxy})==nil)
+''')
+    test('F-T40', 'Friendly attention cannot exhaust the proxy budget needed by a hostile NPC', npc_fixture + r'''
+local owners={}
+for i=1,32 do
+ local npc=native_npc('npc_citizen');npc:AddEntityRelationship(target,D_LI,99)
+ owners[i]=npc
+ SP.UpdateNPCAttention(npc,{target})
+ assert(SP.NPCAttention[npc])
+end
+local npc=native_npc('npc_turret_floor')
+SP.UpdateNPCAttention(npc,{target})
+assert(SP.NPCAttention[npc] and SP.NPCAttention[npc].hostile)
+local count=0;for _ in pairs(SP.NPCAttention) do count=count+1 end
+assert(count==32 and #owners==32)
+''')
+    test('F-T41', 'NPC target batches rotate beyond the first 64 registered actors', npc_fixture + r'''
+player.GetAll=function() return {} end
+local last
+for i=1,80 do
+ last=native_npc('npc_citizen');last:SetPos(Vector(200,0,20))
+ hook.Run('OnEntityCreated',last)
+end
+local calls,saw_last=0,false
+SP.UpdateNPCAttention=function(_,actors)
+ calls=calls+1;assert(#actors<=64)
+ for _,ent in ipairs(actors) do if ent==last then saw_last=true end end
+end
+hook.Run('Think');assert(calls==8 and not saw_last)
+NOW=NOW+.2;hook.Run('Think');assert(calls==16 and saw_last)
 ''')
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
