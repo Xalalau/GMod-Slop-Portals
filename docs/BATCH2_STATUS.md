@@ -17,7 +17,7 @@ Status on 2026-09-08. This remains an incomplete preview. User confirmation refe
 | 11. RPG aim rendering | Assigned to another agent | Excluded from this agent's remaining scope at the user's request. |
 | 12. NPC portal navigation | Assigned to another agent | Excluded from this agent's remaining scope at the user's request. |
 | 13. Light/Lamp illumination | Confirmed by user | Transmit Sandbox Light/Lamp color, range and direction with an aperture mask and cleanup on disable, unlink and removal. Up to four client projectors; dedicated observer acceptance remains pending. |
-| 14. Camera tool feedback | Pending; rejected change removed | Initial `5eda5ed` was insufficient. The user rejected `3d8f67a`; it was removed from history and its changes were undone without a revert commit. Programmatic segment checks did not establish correct visual behavior. |
+| 14. Toolgun trail and impact | Confirmed by user | Applies to every tool, including Camera. Native Sandbox retries world hits with a raw hull, replacing the remote map hit with the entrance. Keep that retry on the portal path, retain the click path before target mutations, and clear inherited muzzle fields on continuation effects. Dedicated Camera/Remover checks reach the remote prop/map; user confirmed the Toolgun trail and impact in the running client. Rejected `3d8f67a` was removed from history without a revert commit. |
 | 15. Trail continuity | Assigned to another agent | Excluded from this agent's remaining scope. |
 
 Visual changes must be demonstrated in the game or confirmed by the user before committing.
@@ -25,3 +25,5 @@ Visual changes must be demonstrated in the game or confirmed by the user before 
 The user's game was restarted during testing. Fresh control probes confirmed both realms in singleplayer Sandbox `gm_construct`. The agent's separate local dedicated session uses Sandbox `gm_flatgrass` on port 27025, with test bots and no human observer. Tests in these topologies do not replace dedicated prediction/network acceptance with a second client.
 
 Offline suites use Lua 5.4 API doubles. The tracer validation run had 151 passing checks and the two existing sound failures C-T42/C-T43; 56 normalized Lua syntax checks passed. These totals include concurrent source changes and do not establish their native acceptance. Results and native JSON/captures are outside the addon source, under `/tmp/seamless-tracer4-*` and `data/seamless_tests/tracer4_*`. Later runs must be reported separately.
+
+The subsequent tool feedback run passed all 29 field checks and LuaLS. The full working-tree validator reported 180 passing checks, the same two sound failures, and 58 normalized Lua syntax checks. Results are in `/tmp/seamless-tool14-*`. Native probes reproduced the incorrect world-hit fallback before the fix and confirmed the remote endpoint after it; no human multiplayer observer was present.

@@ -321,7 +321,7 @@ assert(#emitted==2 and emitted[1].flag==true and emitted[2].flag==true)
 nearvec(emitted[1].data:GetOrigin(),Vector())
 nearvec(emitted[2].data:GetStart(),Vector(200,0,.05))
 assert(emitted[1].data:GetEntity()==weapon and emitted[1].data:GetAttachment()==1)
-assert(emitted[2].data:GetEntity()==nil and effect:GetEntity()==weapon)
+assert(not IsValid(emitted[2].data:GetEntity()) and emitted[2].data:GetAttachment()==0 and effect:GetEntity()==weapon)
 nearvec(effect:GetOrigin(),Vector(200,0,20))
 ''')
     test('F-T21', 'Tool effect adapter preserves unrelated effects and reload ownership', tool_fixture + src('lua/seamless_portals/tool_effects.lua') + r'''
@@ -409,6 +409,86 @@ nearvec(SP.BulletMuzzlePoint(a.start,weapon),a.start)
 weapon.owner=observer
 function observer:ShouldDrawLocalPlayer() return false end
 nearvec(SP.BulletMuzzlePoint(a.start,weapon),a.start)
+''')
+    test('F-T26', 'Tool effects detach continuation even when native EffectData storage is reused', tool_fixture + r'''
+local shared=effect
+function EffectData() return shared end
+util.Effect=function(name,data)
+ emitted[#emitted+1]={entity=data:GetEntity(),attachment=data:GetAttachment(),start=Vector(data:GetStart()),finish=Vector(data:GetOrigin())}
+end
+''' + src('lua/seamless_portals/tool_effects.lua') + r'''
+util.Effect('ToolTracer',effect,true)
+assert(#emitted==2 and emitted[1].entity==weapon and emitted[1].attachment==1)
+assert(not IsValid(emitted[2].entity) and emitted[2].attachment==0)
+nearvec(emitted[2].start,Vector(200,0,.05));nearvec(emitted[2].finish,Vector(200,0,20))
+assert(effect:GetEntity()==weapon and effect:GetAttachment()==1)
+nearvec(effect:GetOrigin(),Vector(200,0,20))
+''')
+    test('F-T27', 'Camera click filters its own near camera and restores trace wrappers on failure', tool_fixture + src('lua/seamless_portals/tool_effects.lua') + r'''
+function weapon:GetMode() return 'camera' end
+local own=prop(Vector(0,0,30));local far=prop(Vector(200,0,0));local foreign=prop();local other=prop(Vector(0,0,30))
+for _,ent in ipairs({own,far,other}) do function ent:GetClass() return 'gmod_cameraprop' end end
+function own:GetPlayer() return p end
+function far:GetPlayer() return p end
+function other:GetPlayer() return foreign end
+local output={}
+local input={start=p:GetShootPos(),endpos=Vector(0,0,-100),filter={foreign},output=output,mask=123}
+local original=input.filter
+local result={Hit=true,Entity=a}
+local line=function(data)
+ assert(data.output==output and data.mask==123 and data.whitelist==false)
+ assert(not data.filter(own) and not data.filter(foreign))
+ assert(data.filter(other) and data.filter(far) and data.filter(a))
+ return result
+end
+local hull=function() error('unexpected hull') end
+util.TraceLine=line;util.TraceHull=hull
+local got=SP.CameraToolTrace(weapon,function(self) assert(self==weapon);return util.TraceLine(input) end)
+assert(got==result and util.TraceLine==line and util.TraceHull==hull and input.filter==original)
+assert(not pcall(SP.CameraToolTrace,weapon,function() error('injected tool trace failure') end))
+assert(util.TraceLine==line and util.TraceHull==hull)
+''')
+    test('F-T28', 'Tool feedback retains the accepted path after a tool removes its target', tool_fixture + src('lua/seamless_portals/tool_effects.lua') + r'''
+function weapon:GetMode() return 'remover' end
+local trace={HitPos=Vector(200,0,20),SeamlessSegments=segments}
+assert(SP.CameraToolTrace(weapon,function() return trace end)==trace)
+SP.TracePortalLine=function() error('must not retrace after target removal') end
+trace.HitPos:Set(Vector(900,0,0))
+util.Effect('ToolTracer',effect,true)
+assert(#emitted==2)
+nearvec(emitted[2].data:GetOrigin(),Vector(200,0,20))
+assert(not IsValid(emitted[2].data:GetEntity()))
+''')
+    test('F-T29', 'Sandbox world-hit hull retry reaches the far map instead of replacing it with the portal', tool_fixture + r'''
+function weapon:GetMode() return 'creator' end
+local calls=0
+local function raw(data)
+ calls=calls+1
+ if data.start.x<100 then
+  return {Hit=true,HitWorld=false,Entity=a,StartPos=Vector(data.start),HitPos=Vector(),HitNormal=Vector(0,0,1),Fraction=.5}
+ end
+ return {Hit=true,HitWorld=true,Entity=NULL,StartPos=Vector(data.start),HitPos=Vector(200,0,20),HitNormal=Vector(0,0,-1),Fraction=.5}
+end
+SP.TraceLine=raw;util.TraceLine=raw;util.TraceHull=raw
+''' + src('lua/seamless_portals/traces.lua') + src('lua/seamless_portals/tool_effects.lua') + r'''
+local data={start=p:GetShootPos(),endpos=Vector(0,0,-100),mins=Vector(),maxs=Vector(),mask=123,filter={p}}
+local function native()
+ local trace=util.TraceLine(data)
+ if not trace.Hit or not IsValid(trace.Entity) then
+  local retry=util.TraceHull(data)
+  if IsValid(retry.Entity) then trace=retry end
+ end
+ return trace
+end
+local broken=native()
+assert(broken.Entity==a and not broken.SeamlessSegments)
+local trace=SP.CameraToolTrace(weapon,native)
+assert(trace.HitWorld and not IsValid(trace.Entity) and #trace.SeamlessSegments==2)
+nearvec(trace.HitPos,Vector(200,0,20))
+util.Effect('ToolTracer',effect,true)
+assert(#emitted==2);nearvec(emitted[2].data:GetOrigin(),trace.HitPos)
+assert(util.TraceHull==raw and util.TraceLine==SP.TraceOwnership.wrapper)
+assert(calls<12)
 ''')
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
