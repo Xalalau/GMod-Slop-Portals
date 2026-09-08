@@ -59,16 +59,48 @@ Bare filenames in a table cell share the preceding directory.
 ## Runtime Workflow
 
 - For documentation-only edits, inspect the referenced files and validate the document; starting Garry's Mod or injecting probes is unnecessary.
-- Before runtime work, inspect previous artifacts and their timestamps. Existing `data/seamless_tests` and legacy `data/nbc_tests` files may belong to another session/addon and do not prove this addon or its helpers are loaded.
+- Control the running game through Lua hotload and `SeamlessPortals.AI`, without taking desktop focus or manipulating OS windows. Do not use `xdotool`, simulated keyboard/mouse input, window activation, or desktop screenshots. Use the Lua capture/menu helpers when visual evidence is needed; keep cursor movement disabled unless the test requires it.
+- Before runtime work, inspect previous artifacts and their timestamps. Existing `data/seamless_tests` files may belong to another session and do not prove this addon or its helpers are loaded. Unrelated addons and historical helper names are not part of this control path.
 - Use this mounted addon with older Workshop/custom copies disabled. Baseline: multiplayer/LAN Sandbox on `gm_flatgrass`; use dedicated multiplayer and a second observer for prediction/network changes. Singleplayer alone is insufficient for those paths.
-- Confirm loading with a timestamped probe in each tested realm, preferably through `lua/ai_tools/sh_playground.lua` once its loading is verified. Do not rely on sandboxed `ps` to establish that the host game is running.
-- The helper loader sends/includes the explicit `ai_tools/` manifest in both realms. Restart server and clients for the first NBC-to-Seamless migration; use the load probe below before relying on scratchpad hotload.
+- For a control/load check, use the existing session and record its map/topology. Do not restart, disconnect, change maps, or launch a second instance just to establish contact.
+- Confirm execution by saving a fresh probe in `lua/ai_tools/sh_playground.lua` and reading its timestamped DATA results in each tested realm, as described below. Do not rely on process listings, window discovery, console typing, old output, or `LoadedAt` alone to establish contact.
 - Install error monitoring in each tested realm before executing probes, then inspect and flush captured errors after the test. Fix errors introduced by the change.
 - Lua hotloads on save, but hooks/timers and persistent tables can survive. Save dependencies before consumers. Restart server and clients for new includes, loading changes, or state that cannot be safely reinitialized.
 - Place test entities near the player (around 160 units) or a suitable spawn/test area. Prevent player interference where appropriate; retain intentional NPC targets for targeting tests.
 - Remove temporary hooks/timers/entities and restore the playground to its original first comment line before delivery. Keep useful evidence until reviewed, then remove only artifacts belonging to the current test.
 
-Launch a local test session when needed:
+### Lua control without desktop focus
+
+The control entry point is **`lua/ai_tools/sh_playground.lua`** in this mounted addon. Once included by the helper loader, saving it executes the new Lua in the running server/client through [GMod auto refresh](https://wiki.facepunch.com/gmod/Auto_Refresh). This is the normal command path; the game console is not required, and `sv_allowcslua` does not need to be changed for addon hotload.
+
+1. Save the original playground outside the addon and choose a unique run ID. Inspect old output before creating this run's directory.
+2. Write a synchronous handshake to the playground, preserving its first comment line. Replace the example run ID below for every attempt. Saving is the execution trigger; no window/input action follows it.
+3. Read `garrysmod/data/seamless_tests/<run ID>/loaded_server.json` and `loaded_client.json` from the filesystem. Both must contain the new run ID and execution timestamp, with `helpers_ready = true`. A missing realm remains unconfirmed. An old loader timestamp is normal if the current probe has a fresh timestamp.
+4. Once contact is confirmed, replace the probe with the required Lua operations. Guard mutations with `SERVER`, rendering/UI with `CLIENT`, and entity access with `IsValid`. Install error monitoring before the actual test, use the helper APIs below, and write results to this run's directory. For smoke checks, call `include("seamless_portals/tests/smoke.lua")` from the monitored probe in each realm.
+5. Read completion artifacts instead of inferring success from queued callbacks. Timers and captures need engine callbacks to advance; a synchronous handshake can succeed while asynchronous work remains pending. Remove all test hooks/timers/entities, flush and uninstall the monitor, restore overridden helper paths, then restore the playground's original first comment line. Run offline helper tests only after removing the probe: they execute the playground with limited API doubles and require idle startup.
+
+```lua
+-- AI agents may run any tests they need in this file and may use it temporarily.
+local runID = "control_YYYYMMDD_HHMMSS_unique"
+local realm = SERVER and "server" or "client"
+local AI = SeamlessPortals and SeamlessPortals.AI
+local dir = "seamless_tests/" .. runID
+file.CreateDir(dir)
+file.Write(dir .. "/loaded_" .. realm .. ".json", util.TableToJSON({
+    run_id = runID,
+    executed_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+    realm = realm,
+    map = game.GetMap(),
+    singleplayer = game.SinglePlayer(),
+    helpers_ready = AI ~= nil and AI.LoadedAt ~= nil and AI.Realm == realm,
+    helpers_loaded_at = AI and AI.LoadedAt,
+    world_ready = AI and AI.WorldReady == true
+}, true))
+```
+
+If no new artifact appears, inspect the loader/include path and whether the playground was already included. Hotload has restrictions; missing output does not prove the game is closed or the addon is broken. Do not switch to desktop automation. A late first include may require a one-time Lua bootstrap or a restart; report that condition if necessary. Console examples below are manual fallback commands for an explicitly requested bootstrap, not the default agent workflow. A clean restart is required when validating automatic startup/client file delivery or changes that cannot be safely hotloaded.
+
+When a new local gameplay test session is actually needed, the launch command is below. Launching can affect desktop focus; do not use it as a fallback for a missing handshake or during a focus-free control check.
 
 ```sh
 steam -applaunch 4000 -console -novid +sv_lan 1 +maxplayers 2 +gamemode sandbox +map gm_flatgrass
@@ -78,11 +110,11 @@ steam -applaunch 4000 -console -novid +sv_lan 1 +maxplayers 2 +gamemode sandbox 
 
 `lua/autorun/ai_tools_init.lua` sends all five helper modules and the playground with `AddCSLuaFile` before including helpers in both gameplay realms. APIs are available immediately, including after a loader hotload. The explicit manifest must be updated when adding a module. The empty `sh_playground.lua` runs after `InitPostEntity` in Sandbox-derived gamemodes, when entity/player access is ready. Loader reloads rerun it only after this realm has seen that hook; for a late first include, run the playground explicitly or restart the session. Saving an already included playground can hotload it immediately, so temporary probes must guard `SERVER` / `CLIENT` and validate entities.
 
-Helpers now own `SeamlessPortals.AI`, `SEAMLESS_PORTALS_AI_` hook/timer/network/render-target names, and `data/seamless_tests` outputs. There is no `NBC.AI` alias or dependency. Restart server and clients after migrating: legacy NBC hooks/timers and in-flight callbacks from a manually included old helper can survive hotload, and must not be removed blindly when NBC is also installed.
+Helpers own `SeamlessPortals.AI`, `SEAMLESS_PORTALS_AI_` hook/timer/network/render-target names, and `data/seamless_tests` outputs. Use only these APIs and namespaces; there is no dependency on a separate addon or a historical helper namespace. Do not alter another addon's hooks/timers during cleanup.
 
 Loading helpers does not spawn entities, install error capture, open UI, download Workshop content, or enable extra PVS. The playground must be restored to its original first comment line before delivery. There is no `sh_error_capture_tests.lua` or inherited synthetic suite in this tree.
 
-With console Lua enabled, verify a fresh load in **each realm**:
+Manual fallback with console Lua enabled, for inspecting the loader in **each realm** (these timestamps do not replace the file handshake):
 
 ```text
 lua_run print("Seamless AI", SeamlessPortals.AI.Realm, SeamlessPortals.AI.LoadedAt, os.date("!%Y-%m-%dT%H:%M:%SZ"))
@@ -97,11 +129,11 @@ If the new loader was introduced mid-session, `lua_openscript autorun/ai_tools_i
 | `Files.Cleanup(options)` | Either realm, local DATA filesystem. Recursively deletes the selected directory's contents; `keep` preserves named files/directories. Inspect ownership first; prefer a probe-specific subdirectory. |
 | `WorldCapture.CaptureEntity`, `CapturePoint`, `CaptureAt`, `CaptureFirst`, `CapturePlayerView` | Client captures PNG + JSON; defaults to `world_capture.png` / `.json`. Offscreen captures default to at most 1024 pixels on the longest side. `FindTargets` / `SelectTarget` work in either realm; provide explicit filters to search. |
 | `WorldCapture.InstallPVS`, `Cleanup` | Explicit server opt-in for offscreen client cameras. Accepts only admin requests with finite, bounded coordinates, at most ten requests/second/player and three seconds per origin. Server cleanup disables requests, clears origins and removes visibility/disconnect hooks; the pooled network name and an inert receiver remain. Client cleanup cancels pending capture hooks/timers. |
-| `Menu.OpenTool(toolName, options)`, `CaptureTool(toolName, options)` | Client only; default tool is `portal_creator_tool`. Also accepts `portal_fitter_tool`, `portal_behavior_tool`, `portal_resizer_tool`, or another Sandbox tool name. Uses menu-only activation. Replaces `OpenNBCOptions` / `CaptureNBCOptions`; no NBC panel checks remain. |
+| `Menu.OpenTool(toolName, options)`, `CaptureTool(toolName, options)` | Client only; default tool is `portal_creator_tool`. Also accepts `portal_fitter_tool`, `portal_behavior_tool`, `portal_resizer_tool`, or another Sandbox tool name. Uses menu-only activation through Lua. |
 | `Menu.GetActiveControlPanelTree(options)`, `Cleanup` | Client tree includes controls, text, ConVars and bounds. Cleanup cancels timers/hooks; it does not close the spawnmenu or restore cursor position. |
 | `Workshop.DownloadAndExtract(wsid, options)` | Client Steamworks download/extraction, only when called; does not mount or execute downloaded Lua. Defaults to `workshop_<id>.dat`, `workshop_<id>_inspect.json`, and a timestamped extraction directory under `data/seamless_tests`. Extracted files normally gain `.dat`; `ExtractGMA(path, options)` can inspect an existing DATA archive in either realm. Download callbacks/retries cannot currently be cancelled; let them finish before deleting their output or restarting helpers. |
 
-Example calls inside a temporary playground/probe (or prefix individual statements with `lua_run` / `lua_run_cl` in the appropriate console):
+Example calls inside a temporary playground/probe:
 
 ```lua
 local AI = SeamlessPortals.AI
@@ -121,7 +153,9 @@ if CLIENT then
     AI.WorldCapture.CapturePoint(LocalPlayer():GetPos() + Vector(160, 0, 64), {
         cameraOrigin = LocalPlayer():EyePos(), addToPVS = false
     })
-    AI.Menu.CaptureTool("portal_behavior_tool") -- Opens, waits, then captures.
+    AI.Menu.CaptureTool("portal_behavior_tool", {
+        openOptions = { enableCursor = false, moveCursor = false }
+    }) -- Opens, waits, then captures.
     -- After opening has finished:
     AI.Menu.GetActiveControlPanelTree({ printTree = true })
     -- Call only when compatibility inspection requires this download:
@@ -150,14 +184,14 @@ python3 tools/validate_release.py . --results /tmp/seamless-validation
 ```
 
 - The full validator requires Python 3.10+ and a discoverable Lua 5.4 shared library. It runs textual gates, regression/integration/custom suites, normalized Lua syntax, and Python syntax checks.
-- For helper/loader changes, also run `lua5.4 validation/ai_tools_tests.lua` from the addon root (requires the Lua 5.4 executable). These six separate checks execute the helper sources with API doubles: loading in both realms, idle startup, NBC isolation, reload/error-log lifecycle, PVS validation/cleanup, and correct tool-panel selection. They are not included in `validate_release.py` totals and do not prove native error-hook delivery, file transmission or rendering.
+- For helper/loader changes, also run `lua5.4 validation/ai_tools_tests.lua` from the addon root (requires the Lua 5.4 executable). Restore the empty playground first. These six separate checks execute the helper sources with API doubles: loading in both realms, idle startup, namespace isolation, reload/error-log lifecycle, PVS validation/cleanup, and correct tool-panel selection. They are not included in `validate_release.py` totals and do not prove native error-hook delivery, file transmission or rendering.
 - Executable tests use Lua 5.4 with GMod API doubles. Normalization is not native GLua compilation, and doubles do not establish physics, rendering, prediction, networking, audio, or AI correctness.
 - The recorded RC3 preview baseline in `docs/FIELD_FIXES_PREVIEW.md` is 126 passing tests and two failures: C-T42 (sound veto-hook recursion) and C-T43 (sound opt-out/network budget). Treat these as recorded evidence, rerun for current results, and investigate without suppressing failures or relaxing assertions merely to pass.
 - Pending integration includes blast chain-reaction recursion, clone collision restoration, native E/physgun carry, and dedicated F00–F10 tests. Keep these visible until relevant checks demonstrate resolution.
 - If Git metadata is available, run `git diff --check`. Otherwise compare against a saved original and check whitespace directly; do not initialize a repository just to validate an edit.
 - For Lua changes, use LuaLS when available with a GLua-aware configuration (LuaJIT/Lua 5.1, runtime includes, and GMod definitions). There is currently no `.luarc.json`; unconfigured warnings are not reliable GMod diagnostics. Look in an installed LuaLS VS Code extension if the binary is absent from PATH, or suggest installation. Plain `luac -p` cannot parse all GLua syntax.
 
-Native smoke commands for a development session with console Lua enabled:
+Run native smoke through a monitored playground with `include("seamless_portals/tests/smoke.lua")` in each realm. Manual console equivalents, when console Lua is enabled:
 
 ```text
 lua_openscript seamless_portals/tests/smoke.lua
