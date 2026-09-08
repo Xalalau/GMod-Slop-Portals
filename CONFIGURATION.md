@@ -1,4 +1,6 @@
 > **RC3 preview notice:** The RC2 record below is historical where superseded. See [2026.09.08-field-rc3-preview](docs/FIELD_FIXES_PREVIEW.md) for the current F00–F10 scope, incomplete integration and two retained sound-test failures. Older successful test counts do not describe this preview.
+Current gameplay follow-up: native crowbar/stunstick continuation and RPG guidance obey `seamless_portals_damage` plus both endpoint damage features. RPG guidance additionally obeys `seamless_portals_projectiles`. See [implementation and validation limits](docs/BUG_FIXES_2026-09-08.md).
+
 
 # Configuration — Custom RC2
 
