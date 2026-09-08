@@ -40,6 +40,7 @@ function ENT:Think()
             if IsValid(cutout) then cutout:RemoveEntity(child) else SafeRemoveEntity(self) end
             return
         end
+		self:UpdateLightingOrigin()
         local destination=p2.SEAMLESS_PORTALS_CUTOUT
         local footprint=SeamlessPortals.PortalOBB(p2,self)
         local owner=self.SEAMLESS_PORTALS_PROXY_CUTOUT
@@ -82,6 +83,18 @@ function ENT:Think()
 end
 
 if SERVER then
+	function ENT:UpdateLightingOrigin()
+		local child=self:GetChild()
+		local record=IsValid(child) and child.SEAMLESS_PORTALS_CARRY
+		-- A fully emerged held prop uses the light in its visible room.
+		local remote=record and SeamlessPortals.IsPortal(record.entry)
+			and SeamlessPortals.PortalOBB(record.entry,child).fully_back
+		local origin=remote and self or child
+		if IsValid(origin) and self.SEAMLESS_PORTALS_LIGHT_ORIGIN~=origin then
+			self:SetLightingOriginEntity(origin)
+			self.SEAMLESS_PORTALS_LIGHT_ORIGIN=origin
+		end
+	end
 	local function transform_portal_local(portal1, portal2, dir)
 		return SeamlessPortals.TransformDirection(portal1, portal2, dir, true)
 	end
@@ -277,7 +290,7 @@ if SERVER then
 		self:SetModelScale(1, 0)
 		if not self:PhysicsInit(child:GetSolid()) or not IsValid(self:GetPhysicsObject()) then SafeRemoveEntity(self) return end
         if not set_model_scale_checked(self, child:GetModelScale()) then SafeRemoveEntity(self) return end
-		self:SetLightingOriginEntity(child)
+		self:UpdateLightingOrigin()
 		self:GetPhysicsObject():SetMass(child:GetPhysicsObject():GetMass())
 		if not self:VerletWeld(self, child, true) then SafeRemoveEntity(self) return end
 		child:DeleteOnRemove(self)

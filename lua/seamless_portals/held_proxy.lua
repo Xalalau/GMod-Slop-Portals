@@ -24,6 +24,21 @@ local function visible_bounds(points,portal)
     end
     return lo,hi
 end
+function SP.TraceHeldProxyMovement(data,allowEscape)
+    local tr=util.TraceHull(data)
+    local left=tr.FractionLeftSolid
+    if allowEscape and tr.StartSolid and not tr.AllSolid and SP.IsFinite(left) and left>0 and left<1 then
+        -- A resting, tilted prop can overlap the conservative box initially.
+        -- Check the remaining sweep after leaving that contact, including walls.
+        left=math.min(1,left+0.0001)
+        local remaining={}
+        for key,value in pairs(data) do remaining[key]=value end
+        remaining.start=LerpVector(left,data.start,data.endpos)
+        tr=util.TraceHull(remaining)
+        tr.Fraction=left+(1-left)*(tr.Fraction or 0)
+    end
+    return tr
+end
 function SP.ClampHeldProxy(clone,child,entry,exit,position,angle)
     local record=child.SEAMLESS_PORTALS_CARRY
     if not record then return position,angle end
@@ -34,7 +49,7 @@ function SP.ClampHeldProxy(clone,child,entry,exit,position,angle)
     local center=(lo+hi)*0.5
     local previous=clone.SEAMLESS_PORTALS_PROXY_LAST
     local delta=previous and position-previous.position or vector_origin
-    local tr=util.TraceHull({start=center-delta,endpos=center,mins=lo-center,maxs=hi-center,mask=MASK_SOLID,
+    local tr=SP.TraceHeldProxyMovement({start=center-delta,endpos=center,mins=lo-center,maxs=hi-center,mask=MASK_SOLID,
         filter=function(ent)
             if ent==clone or ent==entry or ent==exit or ent==record.player then return false end
             if ent:GetClass()=="seamless_portal_cutout" then return false end
@@ -42,7 +57,7 @@ function SP.ClampHeldProxy(clone,child,entry,exit,position,angle)
                 if ent==member or ent==member.SEAMLESS_PORTALS_CLONE then return false end
             end
             return true
-        end})
+        end},record.nativePickup~=nil)
     if tr.StartSolid or tr.AllSolid or tr.Hit then
         SP.CountField("carry_remote_collision_blocks")
         local corrected
@@ -57,9 +72,11 @@ function SP.ClampHeldProxy(clone,child,entry,exit,position,angle)
             phys:SetVelocity(vector_origin)
             position=corrected
         else
-            SP.RestoreCarryFront(record)
+            SP.RestoreCarryContact(record)
             position,angle=SP.TransformPortal(entry,exit,child:GetPos(),child:GetAngles())
         end
+    elseif record.nativePickup then
+        record.contact=SP.CaptureCarryPose(record.group)
     end
     clone.SEAMLESS_PORTALS_PROXY_LAST={position=Vector(position),angle=Angle(angle)}
     return position,angle

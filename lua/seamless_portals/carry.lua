@@ -21,16 +21,16 @@ local function snapshot(group)
     end
     return items
 end
+SP.CaptureCarryPose=snapshot
 function SP.ClearCarryState(record)
     for _,ent in ipairs(record.group or {}) do
         if IsValid(ent) and ent.SEAMLESS_PORTALS_CARRY==record then ent.SEAMLESS_PORTALS_CARRY=nil end
     end
     record.entry,record.exit,record.group,record.safe=nil,nil,nil,nil
+    record.contact=nil
 end
-function SP.RestoreCarryFront(record)
-    -- Used only when a corridor disappears or remote release cannot be committed.
-    -- Restore the last fully-front source pose, before collision ownership ends.
-    for _,item in ipairs(record.safe or {}) do
+function SP.RestoreCarryPose(items)
+    for _,item in ipairs(items or {}) do
         local ent=item.entity
         if IsValid(ent) then
             ent:SetPos(item.pos) ent:SetAngles(item.ang)
@@ -42,6 +42,14 @@ function SP.RestoreCarryFront(record)
             end
         end
     end
+end
+function SP.RestoreCarryFront(record)
+    -- A disappearing corridor must restore a pose outside the entrance wall.
+    SP.RestoreCarryPose(record.safe)
+end
+function SP.RestoreCarryContact(record)
+    -- An initial remote pickup has never occupied the entrance room.
+    SP.RestoreCarryPose(record.contact or record.safe)
 end
 function SP.EndCarryCorridor(record,restore)
     if restore then SP.RestoreCarryFront(record) end
@@ -76,7 +84,9 @@ function SP.DrainCarryReleases()
                 else
                     SP.CountField("carry_release_blocked")
                     root.SEAMLESS_PORTALS_TRANSPORT_BLOCKED=reason
-                    SP.EndCarryCorridor(record,true)
+                    if not SP.RestoreNativePickupRemote or not SP.RestoreNativePickupRemote(record) then
+                        SP.EndCarryCorridor(record,true)
+                    end
                 end
             else
                 -- Still straddling: release to the ordinary physical crossing path.
@@ -99,7 +109,7 @@ function SP.CarryAlreadyThrough(ent,portal)
     local record=ent.SEAMLESS_PORTALS_CARRY
     return record and record.entry==portal and record.crossed and SP.PortalOBB(portal,ent).fully_back
 end
-local function start_corridor(ply,record,entry,group)
+function SP.StartCarryCorridor(ply,record,entry,group)
     local exit=entry:GetExitPortal()
     if not entry:UpdateCutout() then return false end
     local cutout=entry.SEAMLESS_PORTALS_CUTOUT
@@ -119,7 +129,7 @@ local function start_corridor(ply,record,entry,group)
     local admitted={}
     for _,ent in ipairs(group) do
         ent.SEAMLESS_PORTALS_CARRY=record
-        if not cutout:AddEntity(ent) then
+        if not ent.SEAMLESS_PORTALS_NATIVE_PICKUP and not cutout:AddEntity(ent) then
             ent.SEAMLESS_PORTALS_CARRY=nil
             for _,old in ipairs(admitted) do cutout:RemoveEntity(old) end
             SP.ClearCarryState(record)
@@ -149,7 +159,7 @@ function SP.RefreshCarry(ply,record)
             if fp.straddling and fp.fits then record.crossed=true end
             -- A leading object cannot move sideways through a closed frame.
             if fp.straddling and not fp.fits then
-                SP.RestoreCarryFront(record)
+                SP.RestoreCarryContact(record)
                 root.SEAMLESS_PORTALS_TRANSPORT_BLOCKED="held_footprint_outside_aperture"
                 SP.CountField("carry_frame_blocks")
                 return
@@ -179,7 +189,7 @@ function SP.RefreshCarry(ply,record)
     if not chosen then return end
     local group,reason=SP.CollectTransportGroup(root,ply)
     if not group then root.SEAMLESS_PORTALS_TRANSPORT_BLOCKED=reason return end
-    start_corridor(ply,record,chosen,group)
+    SP.StartCarryCorridor(ply,record,chosen,group)
 end
 function SP.RefreshHeldCorridors()
     SP.DrainCarryReleases()

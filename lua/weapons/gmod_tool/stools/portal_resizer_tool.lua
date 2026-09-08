@@ -20,6 +20,7 @@ if CLIENT then
 	language.Add("Tool.portal_resizer_tool.right", "Right Click: Copy portal size, sides and backface")
 
 	function TOOL.BuildCPanel(panel)
+		SeamlessPortals.AddPhysgunHelp(panel)
 		panel:AddControl("label", {
 			text = "Sets the size of portals",
 		})

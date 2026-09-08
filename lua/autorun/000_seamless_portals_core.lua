@@ -8,6 +8,7 @@ include("seamless_portals/holding.lua")
 if SERVER then
     include("seamless_portals/carry.lua")
     include("seamless_portals/held_proxy.lua")
+    include("seamless_portals/physgun_pickup.lua")
 end
 
 AddCSLuaFile("seamless_portals/funneling.lua")

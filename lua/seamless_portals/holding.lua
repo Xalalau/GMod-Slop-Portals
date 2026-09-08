@@ -6,7 +6,8 @@ function SP.HeldBy(ent)
     local owners=SP.HoldOwners[ent]
     local found
     for ply in pairs(owners or {}) do
-        if IsValid(ply) and SP.Holds[ply] and SP.Holds[ply].entity==ent then
+        local record=SP.Holds[ply]
+        if IsValid(ply) and record and (record.entity==ent or record.controllerEntity==ent) then
             if found then return nil end -- competing native controllers: do not choose one
             found=ply
         end
@@ -15,28 +16,40 @@ function SP.HeldBy(ent)
 end
 function SP.ClearHold(ply, ent)
     local old=SP.Holds[ply]
+    if old and ent==old.controllerEntity then ent=old.entity end
     if not old or (ent and old.entity~=ent) then return end
     if SERVER and SP.QueueCarryRelease then SP.QueueCarryRelease(old) end
     local owners=SP.HoldOwners[old.entity]
     if owners then owners[ply]=nil end
+    local controllers=old.controllerEntity and SP.HoldOwners[old.controllerEntity]
+    if controllers then controllers[ply]=nil end
     SP.Holds[ply]=nil
     if SERVER and IsValid(ply) then ply:SetNWEntity("seamless_portals_held",NULL) end
 end
 function SP.RecordHold(ply,ent,kind)
+    local controller
+    if SERVER and IsValid(ent) and ent.SEAMLESS_PORTALS_NATIVE_PICKUP then
+        controller=ent
+        ent=ent.SEAMLESS_PORTALS_NATIVE_PICKUP.plan.root
+    end
     if not IsValid(ply) or not SP.IsLiveEntity(ent) or SP.IsPortal(ent)
         or ent:GetClass()=="seamless_portal_clone" then return end
     local old=SP.Holds[ply]
-    if old and old.entity==ent and old.kind==kind then return end
+    if old and old.entity==ent and old.kind==kind and old.controllerEntity==controller then return end
     SP.ClearHold(ply)
-    SP.Holds[ply]={entity=ent,kind=kind,tick=engine.TickCount()}
+    SP.Holds[ply]={entity=ent,kind=kind,tick=engine.TickCount(),controllerEntity=controller}
     SP.HoldOwners[ent]=SP.HoldOwners[ent] or setmetatable({},{__mode="k"})
     SP.HoldOwners[ent][ply]=true
+    if controller then
+        SP.HoldOwners[controller]=SP.HoldOwners[controller] or setmetatable({},{__mode="k"})
+        SP.HoldOwners[controller][ply]=true
+    end
     if SERVER then ply:SetNWEntity("seamless_portals_held",ent) end
 end
 function SP.HasTrackedHold(ent)
     for ply in pairs(SP.HoldOwners[ent] or {}) do
         local record=SP.Holds[ply]
-        if IsValid(ply) and record and record.entity==ent then return true end
+        if IsValid(ply) and record and (record.entity==ent or record.controllerEntity==ent) then return true end
     end
     return false
 end
@@ -47,8 +60,9 @@ function SP.GetHeldRecord(ply)
         return
     end
     local record=SP.Holds[ply]
+    local controller=record and (record.controllerEntity or record.entity)
     if record and (not SP.IsLiveEntity(record.entity)
-        or (engine.TickCount()>record.tick+1 and not record.entity:IsPlayerHolding())) then
+        or not IsValid(controller) or (engine.TickCount()>record.tick+1 and not controller:IsPlayerHolding())) then
         SP.ClearHold(ply) return
     end
     return record
@@ -66,15 +80,21 @@ if SERVER then
         hook.Add(event,"seamless_portals_hold_tracking",function(ply) SP.ClearHold(ply) end)
     end
     hook.Add("EntityRemoved","seamless_portals_hold_tracking",function(ent)
-        for ply,record in pairs(SP.Holds) do if record.entity==ent then SP.ClearHold(ply,ent) end end
+        for ply,record in pairs(SP.Holds) do
+            if record.entity==ent or record.controllerEntity==ent then SP.ClearHold(ply,ent) end
+        end
         SP.HoldOwners[ent]=nil
     end)
+end
+function SP.WantsPortalPhysgun(ply)
+    return IsValid(ply) and ply:KeyDown(IN_WALK) and ply:KeyDown(IN_SPEED)
 end
 hook.Add("PhysgunPickup","seamless_portals_preserve_hold",function(ply,ent)
     local record=SP.GetHeldRecord(ply)
     if record and record.entity~=ent and (SP.IsPortal(ent) or ent:GetClass()=="seamless_portal_clone") then
         return false
     end
+    if SP.IsPortal(ent) and not SP.WantsPortalPhysgun(ply) then return false end
 end)
 function SP.BlockHeldTraversal(ply,mv,entry,reason)
     if SP.RestorePlayerHull then SP.RestorePlayerHull(ply) end
@@ -109,7 +129,8 @@ if SERVER then
         SP.CarryAudit[ply]=audit
         timer.Simple(0,function()
             if SP.CarryAudit[ply]~=audit or not IsValid(ply) then return end
-            audit.native_hold=IsValid(hold.entity) and hold.entity:IsPlayerHolding() and "retained" or "released"
+            local controller=hold.controllerEntity or hold.entity
+            audit.native_hold=IsValid(controller) and controller:IsPlayerHolding() and "retained" or "released"
             audit.physics_identity=true
             for _,body in ipairs(audit.bodies) do
                 if not IsValid(body.entity) or body.entity:GetPhysicsObjectNum(body.index)~=body.phys then audit.physics_identity=false end

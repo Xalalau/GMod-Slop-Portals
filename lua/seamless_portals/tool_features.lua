@@ -4,7 +4,11 @@ if CLIENT then
     for name,default in pairs(SP.ToolFeatureDefaults) do
         CreateClientConVar("seamless_portals_feature_"..name,default and "1" or "0",true,true,"New portal behavior: "..name,0,1)
     end
+    function SP.AddPhysgunHelp(panel)
+        panel:Help("Physgun: hold Alt + Shift (Walk + Sprint) to grab a portal.")
+    end
     function SP.AddFeatureControls(panel)
+        SP.AddPhysgunHelp(panel)
         for _,item in ipairs({{"Players","players"},{"Props (including carried props)","props"},{"Hitscan damage","damage"},{"Spatial sound","sound"},{"Funneling assistance","funnel"}}) do
             panel:CheckBox(item[1],"seamless_portals_feature_"..item[2])
         end
