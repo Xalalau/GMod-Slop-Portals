@@ -5,6 +5,13 @@
 -- Compiles addon-owned files without executing their registration side effects.
 local paths = {
     "autorun/000_seamless_portals_core.lua",
+    "autorun/ai_tools_init.lua",
+    "ai_tools/sh_error_capture.lua",
+    "ai_tools/sh_menu_tests.lua",
+    "ai_tools/sh_playground.lua",
+    "ai_tools/sh_test_files.lua",
+    "ai_tools/sh_workshop_inspector.lua",
+    "ai_tools/sh_world_capture.lua",
     "autorun/client/cl_render_core.lua",
     "autorun/server/sv_portals_pvs.lua",
     "autorun/sh_detours.lua",
@@ -66,6 +73,10 @@ for _, path in ipairs(paths) do
     end
 end
 local SP = SeamlessPortals
+assert(SP.AI and SP.AI.LoadedAt, "Development helper loader did not run")
+for name, method in pairs({ErrorCapture = "Install", Files = "Cleanup", WorldCapture = "CaptureEntity", Menu = "OpenTool", Workshop = "DownloadAndExtract"}) do
+    assert(SP.AI[name] and isfunction(SP.AI[name][method]), "Missing AI helper API: " .. name .. "." .. method)
+end
 assert(SP.ValidateSides(3) and SP.ValidateSides(100))
 assert(not SP.ValidateSides(0) and not SP.ValidateSides(3.5) and not SP.ValidateSides(math.huge))
 assert(SP.ValidateSize(Vector(100, 100, 8)) and not SP.ValidateSize(Vector(0, 100, 8)))
