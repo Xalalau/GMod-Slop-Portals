@@ -334,6 +334,35 @@ util.Effect('ToolTracer',effect,true);assert(#emitted==2 and emitted[2].data==ef
 local foreign=function() end;util.Effect=foreign
 hook.Run('ShutDown');assert(util.Effect==foreign)
 ''')
+    bolt_fixture = r'''
+local SP=SeamlessPortals;local a,b=pair();local p=player();local bolt=prop(Vector(200,0,20))
+function bolt:GetClass() return 'crossbow_bolt' end
+function bolt:GetInternalVariable(key) assert(key=='m_iDamage');return 100 end
+bolt.owner=p;bolt:GetPhysicsObject().vel=Vector(100,0,0)
+local hits,sounds=0,0
+function bolt:EmitSound() sounds=sounds+1 end
+function p:DispatchTraceAttack(d,tr,dir)
+ hits=hits+1;assert(d:GetAttacker()==p and d:GetInflictor()==bolt and d:GetDamage()==100)
+ assert(tr.Entity==p);nearvec(dir,Vector(1,0,0))
+end
+local target=p
+SP.RawTraceLine=function(d)
+ assert(d.SeamlessIgnore and d.filter(p) and not d.filter(bolt))
+ return {Hit=true,Entity=target,HitPos=Vector(210,0,20)}
+end
+DMG_BULLET,DMG_NEVERGIB=2,4096
+'''
+    test('F-T22', 'Returning crossbow bolt hits its owner once with native damage and attribution', bolt_fixture + r'''
+local record={returning=true}
+assert(SP.TraceReturningBolt(bolt,record,.015))
+assert(hits==1 and sounds==1 and not IsValid(bolt))
+assert(not SP.TraceReturningBolt(bolt,record,.015) and hits==1)
+''', modules['projectiles'])
+    test('F-T23', 'Owner damage requires a transfer and cannot pass another collision', bolt_fixture + r'''
+assert(not SP.TraceReturningBolt(bolt,{},.015))
+target=WORLD;assert(not SP.TraceReturningBolt(bolt,{returning=true},.015))
+assert(hits==0 and sounds==0 and IsValid(bolt) and bolt:GetOwner()==p)
+''', modules['projectiles'])
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
                   failed=sum(r['status'] == 'FAIL' for r in results))

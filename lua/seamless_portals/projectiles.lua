@@ -30,6 +30,32 @@ function SP.ProjectileCrossing(ent,delta)
     end
     return best
 end
+function SP.TraceReturningBolt(ent,record,dt)
+    if not record.returning or record.consumed or ent:GetClass()~="crossbow_bolt"
+        or not enabled:GetBool() then return false end
+    local owner=ent:GetOwner()
+    if not IsValid(owner) or not owner:IsPlayer() then return false end
+    local velocity=ent:GetVelocity()
+    if not SP.FiniteVector(velocity) or velocity:LengthSqr()<1 then return false end
+    local raw=SP.RawTraceLine or SP.TraceLine or util.TraceLine
+    -- An entity filter also excludes its owner in native traces. A function
+    -- excludes only the bolt, so a returning bolt can hit its original shooter.
+    local trace=raw({start=ent:GetPos(),endpos=ent:GetPos()+velocity*dt,
+        filter=function(target) return target~=ent end,mask=MASK_SHOT,SeamlessIgnore=true})
+    if not trace.Hit or trace.Entity~=owner then return false end
+    local damage=tonumber(ent:GetInternalVariable("m_iDamage"))
+    if not SP.IsFinite(damage) or damage<0 then return false end
+    record.consumed=true
+    local info=DamageInfo()
+    info:SetDamage(damage) info:SetDamageType(bit.bor(DMG_BULLET,DMG_NEVERGIB))
+    info:SetAttacker(owner) info:SetInflictor(ent)
+    info:SetDamagePosition(trace.HitPos)
+    info:SetDamageForce(velocity:GetNormalized()*damage*210)
+    owner:DispatchTraceAttack(info,trace,velocity:GetNormalized())
+    if IsValid(ent) then ent:EmitSound("Weapon_Crossbow.BoltHitBody") ent:Remove() end
+    SP.CountField("projectile_owner_hits")
+    return true
+end
 function SP.TransferProjectile(ent,dt,record)
     if not enabled:GetBool() or not IsValid(ent) or not SP.ProjectileClasses[ent:GetClass()]
         or not SP.HasTraversablePortals() then return false end
@@ -83,7 +109,7 @@ function SP.TransferProjectile(ent,dt,record)
     if IsValid(phys) then
         phys:SetPos(body_pos) phys:SetAngles(body_angle) phys:SetVelocityInstantaneous(new_velocity) phys:Wake()
     else ent:SetLocalVelocity(new_velocity) end
-    record.tick=engine.TickCount() record.exit=exit tracked[ent]=record
+    record.tick=engine.TickCount() record.exit=exit record.returning=true tracked[ent]=record
     SP.CountField("projectile_transfers")
     SP.RunSafeHook("SeamlessPortalsProjectileTransferred",ent,entry,exit)
     return true
@@ -91,7 +117,12 @@ end
 hook.Add("Tick","seamless_portals_projectiles",function()
     for ent,record in pairs(tracked) do
         if not IsValid(ent) then tracked[ent]=nil
-        else SP.TransferProjectile(ent,engine.TickInterval(),record) end
+        else
+            local dt=engine.TickInterval()
+            if not SP.TraceReturningBolt(ent,record,dt) and SP.TransferProjectile(ent,dt,record) then
+                SP.TraceReturningBolt(ent,record,dt)
+            end
+        end
     end
 end)
 hook.Add("PostCleanupMap","seamless_portals_projectiles_reset",function()
