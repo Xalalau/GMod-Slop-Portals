@@ -91,12 +91,29 @@ function SP.PortalSight(entry, exit, source, target, source_entity, target_entit
     crossing.distance=source:Distance(crossing.point)+from:Distance(target)
     return crossing
 end
-function SP.CopyDamage(info)
-    local out = DamageInfo()
+function SP.SnapshotDamage(info)
+    local values = {}
     for _,name in ipairs({"Damage","BaseDamage","MaxDamage","DamageBonus","DamageCustom","DamageType",
-        "Attacker","Inflictor","AmmoType","ReportedPosition","DamagePosition","DamageForce"}) do
-        local get,set=info["Get"..name],out["Set"..name]
-        if get and set then set(out,get(info)) end
+        "Attacker","Inflictor","Weapon","AmmoType","ReportedPosition","DamagePosition","DamageForce"}) do
+        local get = info["Get"..name]
+        local value = get and get(info) or info[name]
+        values[name] = isvector(value) and Vector(value) or value
+    end
+    return values
+end
+function SP.CopyDamage(info)
+    -- DamageInfo() can reuse native storage. Read everything before allocating,
+    -- and retain only snapshots across ticks or nested damage callbacks.
+    local values = SP.SnapshotDamage(info)
+    local out = DamageInfo()
+    for name,value in pairs(values) do
+        local set = out["Set"..name]
+        if name == "Attacker" or name == "Inflictor" then
+            value = IsValid(value) and value or game.GetWorld()
+        elseif name == "Weapon" and not IsValid(value) then
+            set = nil
+        end
+        if set then set(out,value) end
     end
     return out
 end

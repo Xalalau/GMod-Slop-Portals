@@ -289,13 +289,11 @@ if SERVER then
         local child,p1,p2=self:GetChild(),self:GetPortal1(),self:GetPortal2()
         local enabled=GetConVar("seamless_portals_damage")
         if not IsValid(child) or not SeamlessPortals.LinkAllows(p1,p2,"damage") or (enabled and not enabled:GetBool()) then return end
-        local forwarded=DamageInfo()
-        for _,name in ipairs({"Damage","BaseDamage","MaxDamage","DamageBonus","DamageCustom","DamageType","Attacker","Inflictor","AmmoType","ReportedPosition"}) do
-            local getter,setter=damage["Get"..name],forwarded["Set"..name]
-            if getter and setter then setter(forwarded,getter(damage)) end
-        end
-        forwarded:SetDamagePosition(SeamlessPortals.TransformPortal(p2,p1,damage:GetDamagePosition()))
-        forwarded:SetDamageForce(SeamlessPortals.TransformDirection(p2,p1,damage:GetDamageForce(),false))
+        local position=SeamlessPortals.TransformPortal(p2,p1,damage:GetDamagePosition())
+        local force=SeamlessPortals.TransformDirection(p2,p1,damage:GetDamageForce(),false)
+        local forwarded=SeamlessPortals.CopyDamage(damage)
+        forwarded:SetDamagePosition(position)
+        forwarded:SetDamageForce(force)
         if SeamlessPortals.ForwardedProxyDamage then SeamlessPortals.ForwardedProxyDamage[forwarded]=true end
         local ok,err=xpcall(function() child:TakeDamageInfo(forwarded) end,debug.traceback)
         if SeamlessPortals.ForwardedProxyDamage then SeamlessPortals.ForwardedProxyDamage[forwarded]=nil end

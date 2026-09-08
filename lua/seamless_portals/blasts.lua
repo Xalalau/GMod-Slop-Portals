@@ -4,7 +4,13 @@ if not SERVER then return end
 local SP = SeamlessPortals
 local enabled=CreateConVar("seamless_portals_blasts","1",FCVAR_ARCHIVE,"Relay supported blast events through apertures",0,1)
 local queue, native_events = {}, {}
-local applying, capture = false, nil
+local capture_depth=0
+local function enqueue(event)
+    if #queue>=128 then SP.CountField("blast_event_budget") return false end
+    queue[#queue+1]=event
+    return true
+end
+local applying, capture = nil, nil
 local function number(ent,key)
     if not IsValid(ent) or not ent.GetInternalVariable then return end
     local value=ent:GetInternalVariable(key)
@@ -25,6 +31,7 @@ function SP.NativeBlastProfile(info)
         or class=="grenade_helicopter" then
         damage=number(ent,"m_flDamage")
         radius=number(ent,"m_DmgRadius") or number(ent,"m_flDamageRadius")
+        if class=="rpg_missile" then radius=radius or 200 end
     end
     if damage and radius then
         return {origin=Vector(ent:GetPos()),damage=damage,radius=radius,source=class}
@@ -44,14 +51,17 @@ local function valid_event(event)
         and event.radius>0 and event.radius<=16384 and SP.IsFinite(event.damage) and event.damage>0
 end
 function SP.NewBlastEvent(info,origin,radius,damage)
-    local event={info=SP.CopyDamage(info),origin=Vector(origin),radius=radius,
-        damage=damage or info:GetDamage(),direct=setmetatable({},{__mode="k"}),tick=engine.TickCount()}
+    local values=SP.SnapshotDamage(info)
+    local event={info=values,origin=Vector(origin),radius=radius,
+        damage=damage or values.Damage,direct=setmetatable({},{__mode="k"}),tick=engine.TickCount()}
     if not valid_event(event) then return end
     return event
 end
 function SP.ObserveNativeBlast(target,info,taken)
-    if applying or not usable() or not info:IsExplosionDamage() then return end
+    if not usable() or not info:IsExplosionDamage() then return end
+    if applying and target==applying.target and info:GetInflictor()==applying.inflictor then return end
     local event=capture
+    if event and event.info.Inflictor~=info:GetInflictor() then event=nil end
     if not event then
         local profile=SP.NativeBlastProfile(info)
         if not profile then SP.CountField("blast_unknown_profile") return end
@@ -61,8 +71,8 @@ function SP.ObserveNativeBlast(target,info,taken)
             event=SP.NewBlastEvent(info,profile.origin,profile.radius,profile.damage)
             if not event then return end
             event.native=true
+            if not enqueue(event) then return end
             native_events[key]=event
-            queue[#queue+1]=event
         end
     end
     if taken and IsValid(target) and not SP.IsPortal(target) then
@@ -96,7 +106,7 @@ function SP.RelayBlast(event)
                         if count>2048 then SP.CountField("blast_candidate_budget") break end
                         local virtual_source=SP.TransformPortal(entry,exit,event.origin)
                         local target=ent:NearestPoint(virtual_source)
-                        local path=SP.PortalSight(entry,exit,event.origin,target,event.info:GetInflictor(),ent)
+                        local path=SP.PortalSight(entry,exit,event.origin,target,event.info.Inflictor,ent)
                         if path then
                             local amount=SP.BlastPathDamage(event,path)
                             local current=targets[ent]
@@ -110,7 +120,7 @@ function SP.RelayBlast(event)
         end
         if count>2048 then break end
     end
-    applying=true
+    local previous=applying
     local ok,err=xpcall(function()
         local ordered={}
         for ent,hit in pairs(targets) do ordered[#ordered+1]={entity=ent,hit=hit} end
@@ -126,17 +136,19 @@ function SP.RelayBlast(event)
                 info:SetDamagePosition(hit.point)
                 info:SetReportedPosition(hit.virtual)
                 local direction=(hit.point-hit.virtual):GetNormalized()
-                local force=event.info:GetDamageForce():Length()
+                local force=event.info.DamageForce:Length()
                 if force<=0 then force=event.damage*300 end
                 info:SetDamageForce(direction*force*(amount/event.damage))
                 if not IsValid(info:GetAttacker()) then info:SetAttacker(game.GetWorld()) end
                 if not IsValid(info:GetInflictor()) then info:SetInflictor(game.GetWorld()) end
+                applying={target=ent,inflictor=info:GetInflictor()}
                 ent:TakeDamageInfo(info)
+                applying=previous
                 SP.CountField("blast_targets_relayed")
             end
         end
     end,debug.traceback)
-    applying=false
+    applying=previous
     if not ok then ErrorNoHalt("[Seamless Portals] Blast relay: "..tostring(err).."\n") end
     return ok
 end
@@ -156,37 +168,41 @@ hook.Add("Tick","seamless_portals_blast_queue",SP.FlushBlastEvents)
 -- Lua blast entry points retain their original local damage and return value.
 -- Native witnesses and Lua wrappers share one event to avoid double relays.
 SP.BlastHooks=SP.BlastHooks or {}
+function SP.InvokeBlast(name,owned,...)
+    local args={...}
+    if capture_depth>=8 or not usable() then return owned.base(unpack(args)) end
+    local info,origin,radius
+    if name=="BlastDamageInfo" then info,origin,radius=args[1],args[2],args[3]
+    else
+        info=DamageInfo() info:SetInflictor(IsValid(args[1]) and args[1] or game.GetWorld())
+        info:SetAttacker(IsValid(args[2]) and args[2] or game.GetWorld())
+        info:SetDamage(args[5]) info:SetDamageType(DMG_BLAST)
+        origin,radius=args[3],args[4]
+    end
+    if not SP.FiniteVector(origin) then return owned.base(unpack(args)) end
+    local event=SP.NewBlastEvent(info,origin,radius)
+    if not event then return owned.base(unpack(args)) end
+    local previous=capture
+    capture=event
+    capture_depth=capture_depth+1
+    local result
+    local ok,err=xpcall(function() result=owned.base(unpack(args)) end,debug.traceback)
+    capture=previous
+    capture_depth=capture_depth-1
+    if not ok then error(err,0) end
+    enqueue(event)
+    return result
+end
 for _,name in ipairs({"BlastDamage","BlastDamageInfo"}) do
     local owned=SP.BlastHooks[name]
     if not owned then
         owned={base=util[name]}
-        owned.wrapper=function(...)
-            local args={...}
-            if applying or capture or not usable() then return owned.base(unpack(args)) end
-            local info,origin,radius
-            if name=="BlastDamageInfo" then info,origin,radius=args[1],args[2],args[3]
-            else
-                info=DamageInfo() info:SetInflictor(IsValid(args[1]) and args[1] or game.GetWorld())
-                info:SetAttacker(IsValid(args[2]) and args[2] or game.GetWorld())
-                info:SetDamage(args[5]) info:SetDamageType(DMG_BLAST)
-                origin,radius=args[3],args[4]
-            end
-            if not SP.FiniteVector(origin) then return owned.base(unpack(args)) end
-            local event=SP.NewBlastEvent(info,origin,radius)
-            if not event then return owned.base(unpack(args)) end
-            capture=event
-            local result
-            local ok,err=xpcall(function() result=owned.base(unpack(args)) end,debug.traceback)
-            capture=nil
-            if not ok then error(err,0) end
-            queue[#queue+1]=event
-            return result
-        end
+        owned.wrapper=function(...) return SP.InvokeBlast(name,owned,...) end
         SP.BlastHooks[name]=owned
         util[name]=owned.wrapper
     end
 end
-hook.Add("PostCleanupMap","seamless_portals_blast_reset",function() queue={} native_events={} capture=nil applying=false end)
+hook.Add("PostCleanupMap","seamless_portals_blast_reset",function() queue={} native_events={} capture=nil applying=nil capture_depth=0 end)
 hook.Add("ShutDown","seamless_portals_blast_reset",function()
     for name,owned in pairs(SP.BlastHooks) do if util[name]==owned.wrapper then util[name]=owned.base end end
 end)
