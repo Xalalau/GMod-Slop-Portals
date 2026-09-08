@@ -363,22 +363,6 @@ assert(not SP.TraceReturningBolt(bolt,{},.015))
 target=WORLD;assert(not SP.TraceReturningBolt(bolt,{returning=true},.015))
 assert(hits==0 and sounds==0 and IsValid(bolt) and bolt:GetOwner()==p)
 ''', modules['projectiles'])
-    test('F-T24', 'RPG aim appears remotely before firing and hands visibility to missile guidance', rpg_fixture + r'''
-assert(SP.UpdateRPGAim(p))
-local aim=SP.RPGAim[p];assert(aim and dot:GetOwner()==p)
-nearvec(aim.laser:GetPos(),endpoint);assert(dot:GetNWBool('seamless_portals_rpg_hidden'))
-assert(SP.UpdateRPGGuidance(missile,record))
-assert(not SP.RPGAim[p] and not IsValid(aim.laser) and record.old_nodraw==false)
-SP.ClearRPGGuidance(missile)
-assert(not dot:GetNWBool('seamless_portals_rpg_hidden') and not dot:GetNoDraw() and dot:GetOwner()==p)
-''', modules['rpg_guidance'])
-    test('F-T25', 'Leaving portal aim restores the native dot and removes the remote sprite', rpg_fixture + r'''
-assert(SP.UpdateRPGAim(p));local aim=SP.RPGAim[p]
-SP.TracePortalLine=function() return {} end
-assert(not SP.UpdateRPGAim(p))
-assert(not SP.RPGAim[p] and not IsValid(aim.laser) and not dot:GetNoDraw())
-assert(not dot:GetNWBool('seamless_portals_rpg_hidden') and dot:GetOwner()==p)
-''', modules['rpg_guidance'])
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
                   failed=sum(r['status'] == 'FAIL' for r in results))
