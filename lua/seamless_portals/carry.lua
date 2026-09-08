@@ -24,7 +24,10 @@ end
 SP.CaptureCarryPose=snapshot
 function SP.ClearCarryState(record)
     for _,ent in ipairs(record.group or {}) do
-        if IsValid(ent) and ent.SEAMLESS_PORTALS_CARRY==record then ent.SEAMLESS_PORTALS_CARRY=nil end
+        if IsValid(ent) and ent.SEAMLESS_PORTALS_CARRY==record then
+            if SP.EndToolTrailCarry then SP.EndToolTrailCarry(ent) end
+            ent.SEAMLESS_PORTALS_CARRY=nil
+        end
     end
     record.entry,record.exit,record.group,record.safe=nil,nil,nil,nil
     record.contact=nil
@@ -138,6 +141,12 @@ function SP.StartCarryCorridor(ply,record,entry,group)
         end
         admitted[#admitted+1]=ent
     end
+    if SP.UpdateToolTrailCarry then
+        local sources={}
+        local plan=record.nativePickup and record.nativePickup.plan
+        for _,item in ipairs(plan and plan.items or {}) do sources[item.entity]=item.pos end
+        for _,ent in ipairs(group) do SP.UpdateToolTrailCarry(ent,record,sources[ent]) end
+    end
     SP.CountField("carry_corridors_started")
     return true
 end
@@ -165,6 +174,9 @@ function SP.RefreshCarry(ply,record)
                 SP.CountField("carry_frame_blocks")
                 return
             end
+        end
+        if SP.UpdateToolTrailCarry then
+            for _,ent in ipairs(record.group) do SP.UpdateToolTrailCarry(ent,record) end
         end
         if all_front then
             record.safe=snapshot(record.group)

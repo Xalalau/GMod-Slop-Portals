@@ -63,3 +63,27 @@ The user confirmed that the visible behavior worked after this change.
 A dedicated multiplayer client observer, clean-startup file delivery and broad
 addon compatibility were not tested. This is focused
 native evidence, not full preview acceptance.
+
+## Remote Physgun pickup follow-up
+
+Native remote pickup unfolds the real physics body behind the entrance while
+its visible origin remains in the exit room. Carry trails now follow that
+visible origin. Initial selection preserves the remote history; crossing the
+origin through the plane starts a new segment and lets the previous one expire.
+Withdrawal, release, completed transport and corridor cleanup restore ordinary
+parenting. A trail applied during an existing carry starts in the visible room.
+
+Seven additional offline cases (`TT-T10`–`TT-T16`) cover remote selection,
+movement across and back through the plane, transport completion, reapplication,
+foreign handles, and the actual carry admission/update/cleanup entry points.
+A monitored `gm_construct` server/client probe modeled the hidden-body position
+changes with native entities and trails. Its visible bounds stayed below 78
+units with portals 800 units apart; both realms captured no Lua errors. Evidence
+is in DATA `seamless_tests/tool_trail_carry_20260908_095000/`.
+This probe did not drive the native Physgun controller. No fresh dedicated
+server artifact appeared for this follow-up, so that realm remains unconfirmed.
+GLua-configured LuaLS found no issue in the trail module; `carry.lua` retains its
+pre-existing ConVar-flag annotation warning.
+
+The isolated follow-up passed 291 offline checks and all 60 normalized Lua
+syntax checks. C-T42 and C-T43 remain the two pre-existing sound failures.

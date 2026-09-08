@@ -1113,6 +1113,73 @@ util.SpriteTrail=outer
 assert(util.SpriteTrail==outer and SP.ToolTrailFactory.wrapper==ours)
 assert(create(0).SEAMLESS_PORTALS_DETACHABLE_TRAIL)
 ''')
+    test('TT-T10', 'Remote native pickup keeps existing trail history in the visible room', tool_trail_fixture + r'''
+e:SetPos(Vector(0,0,-20));local record={entry=a,exit=b,group={e}};e.SEAMLESS_PORTALS_CARRY=record
+local remote=SP.TransformPortal(a,b,e:GetPos());original:SetPos(remote)
+SP.UpdateToolTrailCarry(e,record,remote)
+assert(#made==0 and not original:GetNoDraw() and not IsValid(original:GetParent()))
+nearvec(original:GetPos(),remote)
+e:SetPos(Vector(0,0,-30));SP.UpdateToolTrailCarry(e,record)
+nearvec(original:GetPos(),(SP.TransformPortal(a,b,e:GetPos())));assert(#made==0)
+local before=original:GetPos();e:SetPos(Vector(0,0,2));SP.UpdateToolTrailCarry(e,record)
+assert(#made==1 and not original:GetNoDraw());nearvec(original:GetPos(),before);nearvec(made[1]:GetPos(),e:GetPos())
+SP.EndToolTrailCarry(e);assert(not e.SEAMLESS_PORTALS_TOOL_TRAIL_CARRY and made[1]:GetParent()==e)
+expire();assert(original:GetNoDraw() and not made[1]:GetNoDraw())
+''')
+    test('TT-T11', 'Carrying a local trail across and back retains both fading segments', tool_trail_fixture + r'''
+local record={entry=a,exit=b,group={e}};e.SEAMLESS_PORTALS_CARRY=record
+SP.UpdateToolTrailCarry(e,record,e:GetPos());assert(#made==0)
+e:SetPos(Vector(0,0,-20));SP.UpdateToolTrailCarry(e,record)
+assert(#made==1);nearvec(original:GetPos(),source);nearvec(made[1]:GetPos(),(SP.TransformPortal(a,b,e:GetPos())))
+local before=made[1]:GetPos();e:SetPos(Vector(0,0,8));SP.UpdateToolTrailCarry(e,record)
+assert(#made==2 and IsValid(made[1]) and not made[1]:GetNoDraw());nearvec(made[1]:GetPos(),before)
+SP.EndToolTrailCarry(e);expire();assert(not IsValid(made[1]) and made[2]:GetParent()==e)
+''')
+    test('TT-T12', 'Final transport retires a held trail at its visible pose instead of its hidden body', tool_trail_fixture + r'''
+e:SetPos(Vector(0,0,-20));local record={entry=a,exit=b,group={e}};e.SEAMLESS_PORTALS_CARRY=record
+local remote=SP.TransformPortal(a,b,e:GetPos());original:SetPos(remote);SP.UpdateToolTrailCarry(e,record,remote)
+local hidden=e:GetPos();e:SetPos(remote)
+assert(SP.ResetToolTrail(e,hidden));nearvec(original:GetPos(),remote)
+assert(made[1]:GetParent()==e and not e.SEAMLESS_PORTALS_TOOL_TRAIL_CARRY)
+SP.EndToolTrailCarry(e);assert(#made==1)
+''')
+    test('TT-T13', 'A trail applied during remote carry starts in the visible room', tool_trail_fixture + r'''
+e:SetPos(Vector(0,0,-20));local record={entry=a,exit=b,group={e}};e.SEAMLESS_PORTALS_CARRY=record
+original:Remove();local replacement=create(0);e.SToolTrail=replacement
+local remote=SP.TransformPortal(a,b,e:GetPos());nearvec(replacement:GetPos(),remote)
+assert(not IsValid(replacement:GetParent()) and owned[replacement])
+SP.UpdateToolTrailCarry(e,record);assert(#made==1);nearvec(replacement:GetPos(),remote)
+''')
+    test('TT-T14', 'Removed or foreign trails cannot be taken over by carry updates', tool_trail_fixture + r'''
+local record={entry=a,exit=b,group={e}}
+original.parent=b;original.SEAMLESS_PORTALS_TRAIL_ENTITY=b
+SP.UpdateToolTrailCarry(e,record);assert(not e.SEAMLESS_PORTALS_TOOL_TRAIL_CARRY and original:GetParent()==b)
+original:Remove();SP.UpdateToolTrailCarry(e,record);SP.EndToolTrailCarry(e)
+assert(#made==0)
+''')
+    test('TT-T15', 'The native pickup corridor seeds, updates and releases the visible trail pose', tool_trail_fixture
+         + modules['carry'] + r'''
+local ply=player();function ply:EyePos() return Vector(0,0,100) end
+local cutout=prop();a.SEAMLESS_PORTALS_CUTOUT=cutout
+function a:UpdateCutout() return true end
+function cutout:AddEntity() return true end
+function cutout:RemoveEntity() end
+e:SetPos(Vector(0,0,-20));local remote=SP.TransformPortal(a,b,e:GetPos());original:SetPos(remote)
+local record={entity=e,nativePickup={plan={items={{entity=e,pos=remote}}}}}
+assert(SP.StartCarryCorridor(ply,record,a,{e}));nearvec(original:GetPos(),remote);assert(#made==0)
+e:SetPos(Vector(0,0,-30));SP.RefreshCarry(ply,record)
+nearvec(original:GetPos(),(SP.TransformPortal(a,b,e:GetPos())));assert(#made==0)
+e:SetPos(Vector(0,0,80));SP.RefreshCarry(ply,record)
+assert(#made==1 and not record.entry and not e.SEAMLESS_PORTALS_TOOL_TRAIL_CARRY and made[1]:GetParent()==e)
+''')
+    test('TT-T16', 'Rejected carry admission leaves trail parenting and history untouched', tool_trail_fixture
+         + modules['carry'] + r'''
+local cutout=prop();a.SEAMLESS_PORTALS_CUTOUT=cutout
+function a:UpdateCutout() return true end
+function cutout:AddEntity() return false end
+assert(not SP.StartCarryCorridor(player(),{entity=e},a,{e}))
+assert(original:GetParent()==e and not original:GetNoDraw() and #made==0 and not e.SEAMLESS_PORTALS_TOOL_TRAIL_CARRY)
+''')
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
                   failed=sum(r['status'] == 'FAIL' for r in results))
