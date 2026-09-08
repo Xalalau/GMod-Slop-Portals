@@ -52,8 +52,17 @@ function SP.TransferProjectile(ent,dt,record)
     local destination,angle=SP.TransformPortal(entry,exit,hit.center,ent:GetAngles())
     local bounds=SP.PortalOBB(exit,ent,destination,angle)
     if not bounds.fits then SP.CountField("projectile_exit_aperture_blocked") return false end
-    local push=exit:GetUp()*math.max(0,0.1-bounds.lo.z)
+    local new_velocity=SP.TransformDirection(entry,exit,velocity,false)
+    local direction=new_velocity:GetNormalized()
+    local outward=direction:Dot(exit:GetUp())
+    if outward<=1e-6 then return false end
+    -- Clear the leading shape along its ray. A normal-only push moves oblique
+    -- energy balls onto a different trajectory.
+    local push=direction*(math.max(0,0.1-bounds.lo.z)/outward)
     destination=destination+push
+    local corridor=raw({start=hit.mapped+exit:GetUp()*0.05,endpos=destination,
+        filter={ent,exit},mask=MASK_SOLID,SeamlessIgnore=true})
+    if corridor.StartSolid or corridor.AllSolid or corridor.Hit then return false end
     -- Test the transformed real shape conservatively. Do not disable world
     -- collisions or delete the projectile if its destination is obstructed.
     local lo,hi=Vector(math.huge,math.huge,math.huge),Vector(-math.huge,-math.huge,-math.huge)
@@ -64,7 +73,6 @@ function SP.TransferProjectile(ent,dt,record)
     local block=util.TraceHull({start=destination,endpos=destination,mins=lo,maxs=hi,
         filter={ent,exit},mask=MASK_SOLID,SeamlessIgnore=true})
     if block.StartSolid or block.AllSolid or block.Hit then SP.CountField("projectile_exit_blocked") return false end
-    local new_velocity=SP.TransformDirection(entry,exit,velocity,false)
     local body_pos,body_angle
     if IsValid(phys) then
         body_pos,body_angle=SP.TransformPortal(entry,exit,phys:GetPos()+hit.center-ent:GetPos(),phys:GetAngles())
