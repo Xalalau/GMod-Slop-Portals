@@ -236,6 +236,7 @@ function ENT:UpdateCutout(recursive)
     local snapshot = SeamlessPortals.CaptureGeometry(self)
     local old = self.SEAMLESS_PORTALS_CUTOUT
     if not SeamlessPortals.IsLiveEntity(old) or not old.SEAMLESS_PORTALS_READY
+        or old.SEAMLESS_PORTALS_MESH_REVISION ~= SeamlessPortals.CutoutMeshRevision
         or not SeamlessPortals.SameGeometry(old.SEAMLESS_PORTALS_GEOMETRY, snapshot) then
         -- A stale shape is never retained as a collision-disabled crossing region.
         self:DiscardTraversalState()

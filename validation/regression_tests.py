@@ -81,7 +81,7 @@ def main(root: Path, output: Path):
     test('P32','Mesh rejects NaN and collinear triangles before native call',['R10'],mesh+mesh_setup+'''e.VERTICES={Vector(0/0,0,0),Vector(1,0,0),Vector(0,1,0),Vector(),Vector(1,0,0),Vector(2,0,0)};assert(e:CreatePhysmesh()==false and calls==0)''')
     test('P33','Mesh retains valid triangles and requires native success',['R04','R10'],mesh+mesh_setup+'''e.VERTICES={Vector(),Vector(1,0,0),Vector(0,1,0)};assert(e:CreatePhysmesh()==true and calls==1);function e:PhysicsFromMesh() return false end;assert(e:CreatePhysmesh()==false)''')
     collision=src('lua/entities/seamless_portal_cutout.lua','local logic_collision_pair','function ENT:PhysicsCollide')
-    collision_setup='''local world={GetPhysicsObject=function(self) return self end};game={GetWorld=function() return world end};local created=0;ents={Create=function() created=created+1;return {Spawn=function() end,SetPhysConstraintObjects=function() end,Activate=function() end,Input=function() end} end};SeamlessPortals.CollectTransportGroup=function(ent) if ent.constrained then return nil,\'fixture_unsupported_graph\' end return {ent} end;constraint={HasConstraints=function(e) return e.constrained==true end};local phys={RecheckCollisionFilter=function() end};local e={GetClass=function() return 'prop_physics' end,GetPhysicsObject=function() return phys end};local c=setmetatable({ENTITIES={},SEAMLESS_PORTALS_READY=true,GetPhysicsObject=function() return phys end},{__index=ENT});'''
+    collision_setup='''local world={GetPhysicsObject=function(self) return self end};game={GetWorld=function() return world end};local created=0;ents={Create=function() created=created+1;return {Spawn=function() end,SetPhysConstraintObjects=function() end,Activate=function() end,SetSaveValue=function() return true end,Input=function() end} end};SeamlessPortals.CollectTransportGroup=function(ent) if ent.constrained then return nil,\'fixture_unsupported_graph\' end return {ent} end;constraint={HasConstraints=function(e) return e.constrained==true end};local phys={RecheckCollisionFilter=function() end};local e={GetClass=function() return 'prop_physics' end,GetPhysicsObject=function() return phys end};local c=setmetatable({ENTITIES={},SEAMLESS_PORTALS_READY=true,GetPhysicsObject=function() return phys end},{__index=ENT});'''
     test('P34','Constrained entity admission is rejected without native work',['B09'],collision+collision_setup+'''e.constrained=true;assert(not c:AddEntity(e));assert(created==0 and e.SEAMLESS_PORTALS_CUTOUT==nil);e.constrained=false;assert(c:AddEntity(e));assert(e.SEAMLESS_PORTALS_CUTOUT==c and c.ENTITIES[e])''')
     test('P35','Removing foreign/deleted memberships does not alter owner',['B10'],collision+collision_setup+'''local other={};e.SEAMLESS_PORTALS_CUTOUT=other;c.ENTITIES[e]=true;c:RemoveEntity(e);assert(e.SEAMLESS_PORTALS_CUTOUT==other and c.ENTITIES[e]==nil and created==0);e.valid=false;c.ENTITIES[e]=true;c:RemoveEntity(e);assert(c.ENTITIES[e]==nil)''')
     test('P36','Native collision helper allocation failure fails closed',['R01','R04'],collision+collision_setup+'''ents.Create=function() return NULL end;assert(not c:AddEntity(e));assert(e.SEAMLESS_PORTALS_CUTOUT==nil and c.ENTITIES[e]==nil)''')
@@ -97,6 +97,94 @@ def main(root: Path, output: Path):
     test('P43','Notify-before-assignment batches to one coherent rebuild',['B02','O03'],setup+reconcile+entity_setup+'''e:SetSize(Vector(100,100,8));e:SetSides(4);assert(e.builds==0);assert(e:ReconcileGeometry());assert(e.builds==1 and e.built_sides==4);e:SetSize(Vector(200,200,8));e:SetSides(50);assert(e.builds==1);e:ReconcileGeometry();assert(e.builds==2 and e.built_sides==50);nearvec(e.built_size,Vector(200,200,8));e:ReconcileGeometry();assert(e.builds==2)''')
     test('P44','Client reconciles missing initial/change notifications',['B02'],setup+reconcile+entity_setup+'''CLIENT=true;SERVER=false;e.vars.Size=Vector(100,100,8);e.vars.Sides=4;e.SEAMLESS_PORTALS_GEOMETRY_DIRTY=false;assert(e:ReconcileGeometry() and e.builds==1);e.vars.Sides=6;assert(e:ReconcileGeometry() and e.builds==2 and e.built_sides==6)''')
     test('P45','Invalid public setters leave native state and dirty flags unchanged',['B01'],setup+reconcile+entity_setup+'''e:SetSize(Vector(100,100,8));e:SetSides(4);e:ReconcileGeometry();local writes=e.writes;assert(not e:SetSides(100000) and not e:SetSize(Vector(0,10,8)));assert(e.writes==writes and e.builds==1 and e.SEAMLESS_PORTALS_GEOMETRY_DIRTY==false);assert(e:GetSides()==4);nearvec(e:GetSize(),Vector(100,100,8))''')
+    surface = src('lua/entities/seamless_portal_cutout.lua', 'local function cut_concave', 'function ENT:CreatePhysmesh()')
+    surface_setup = r'''
+function Lerp(t,a,b) return a+(b-a)*math.Clamp(t,0,1) end
+util.IntersectRayWithPlane=function(start,delta,point,normal)
+ local denominator=delta:Dot(normal)
+ if math.abs(denominator)<1e-8 then return end
+ return start+delta*((point-start):Dot(normal)/denominator)
+end
+local function support_mesh(axis,sign,sides,gap,reverse)
+ local p=portal(Vector(100,147.1,8),sides)
+ local lo,hi=SeamlessPortals.GetApertureBounds(p:GetSize(),sides)
+ local floor=(sign==1 and hi[axis] or lo[axis])+sign*gap
+ local normal=Vector();normal[axis]=-sign
+ -- Surface basis expressed directly in portal coordinates.
+ function p:WorldToLocalAngles()
+  return {Right=function() return axis==1 and Vector(0,sign,0) or Vector(-sign,0,0) end,
+          Up=function() return Vector(0,0,1) end}
+ end
+ SeamlessPortals.TraceLine=function(data)
+  assert(data.mask==MASK_SOLID_BRUSHONLY and data.filter(p)==false)
+  local delta=data.endpos-data.start
+  local fraction=delta[axis]~=0 and (floor-data.start[axis])/delta[axis] or -1
+  local hit=fraction>=0 and fraction<=1
+  return {Hit=hit,StartSolid=false,Fraction=hit and fraction or 1,
+          HitPos=hit and data.start+delta*fraction or data.endpos,HitNormal=normal}
+ end
+ local c=setmetatable({VERTICES={}}, {__index=ENT})
+ c:GeneratePhysmesh(p,reverse and portal() or nil)
+ local area=0
+ for i=1,#c.VERTICES,3 do
+  local a,b,d=c.VERTICES[i],c.VERTICES[i+1],c.VERTICES[i+2]
+  local target=floor*(reverse and axis==2 and -1 or 1)
+  if math.abs(a[axis]-target)<1e-6 and math.abs(b[axis]-target)<1e-6 and math.abs(d[axis]-target)<1e-6 then
+   area=area+(b-a):Cross(d-a):Length()/2
+   for _,v in ipairs({a,b,d}) do assert(reverse and v.z<=1e-6 or not reverse and v.z>=-1e-6) end
+  end
+ end
+ assert(area>1000,'Missing support beyond aperture border: '..axis..'/'..sign..'/'..sides)
+end
+'''
+    test('P46','Cutout keeps floor and side support just outside the aperture',['F03'],surface+surface_setup+'''
+for axis=1,2 do for _,sign in ipairs({-1,1}) do support_mesh(axis,sign,4,0.1,false) end end
+''')
+    test('P47','Rounded cutouts retain support beyond their polygon bounds',['F03'],surface+surface_setup+'''
+for _,sides in ipairs({3,6,50,100}) do support_mesh(1,1,sides,16,false) end
+''')
+    test('P48','Exit support is transformed into the back half of the source cutout',['F03'],surface+surface_setup+'''
+for axis=1,2 do for _,sign in ipairs({-1,1}) do support_mesh(axis,sign,4,0.1,true) end end
+''')
+    collision_cache = r'''
+local pairs_state={}
+local function pair_enabled(a,b)
+ return not pairs_state[a] or pairs_state[a][b]~=false
+end
+ents.Create=function()
+ created=created+1
+ local helper={m_disabled=false,m_succeeded=false}
+ function helper:Spawn() end
+ function helper:SetPhysConstraintObjects(a,b) self.a,self.b=a,b end
+ function helper:Apply(enabled)
+  self.m_disabled,self.m_succeeded=not enabled,true
+  pairs_state[self.a]=pairs_state[self.a] or {};pairs_state[self.a][self.b]=enabled
+ end
+ function helper:Activate() if self.m_disabled then self:Apply(false) end end
+ function helper:Input(input)
+  local enabled=input=='EnableCollisions'
+  if self.m_succeeded and self.m_disabled==not enabled then return end
+  self:Apply(enabled)
+ end
+ function helper:SetSaveValue(key,value) self[key]=value;return true end
+ return helper
+end
+-- Distinct native bodies, including each cutout and the map.
+local cutout_phys={RecheckCollisionFilter=function() end}
+function c:GetPhysicsObject() return cutout_phys end
+'''
+    test('P49','Reentering a cutout restores its previously disabled collision pair',['F03'],collision+collision_setup+collision_cache+'''
+assert(c:AddEntity(e));assert(pair_enabled(phys,cutout_phys) and not pair_enabled(phys,world))
+c:RemoveEntity(e);assert(not pair_enabled(phys,cutout_phys) and pair_enabled(phys,world))
+assert(c:AddEntity(e));assert(pair_enabled(phys,cutout_phys) and not pair_enabled(phys,world))
+c:RemoveEntity(e);assert(pair_enabled(phys,world))
+''')
+    test('P50','Proxy reentry restores support after world collisions were enabled',['F03'],collision+collision_setup+collision_cache+'''
+assert(c:AddProxy(e));c:RemoveProxy(e)
+assert(pair_enabled(phys,world) and not pair_enabled(phys,cutout_phys))
+assert(c:AddProxy(e));assert(pair_enabled(phys,cutout_phys) and not pair_enabled(phys,world))
+c:RemoveProxy(e);assert(pair_enabled(phys,world) and e.SEAMLESS_PORTALS_PROXY_CUTOUT==nil)
+''')
     # Test real Python build/check functions with temporary files and deterministic byte checks.
     try:
         release_path=root/'tools/build_release.py';spec=importlib.util.spec_from_file_location('release_candidate',release_path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)

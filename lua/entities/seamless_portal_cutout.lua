@@ -10,6 +10,8 @@ ENT.DisableDuplicator = true
 ENT.ENTITIES          = {}
 ENT.VERTICES          = {}
 
+SeamlessPortals.CutoutMeshRevision = 1
+
 -- SERVER only entity
 -- physically cuts a hole in the world,
 -- code reused from Earthbending
@@ -113,7 +115,10 @@ function ENT:GeneratePhysmesh(portal, exit_portal)
 	local vertices = {}
 
 	local function pos_local(x, y, z)
-		return Vector(Lerp(x, aperture_min.x, aperture_max.x), Lerp(y, aperture_min.y, aperture_max.y), z - size[3])
+		-- These surface probes extend past the aperture. GMod Lerp clamps to
+		-- [0, 1], which misses floors even slightly below the portal's bottom.
+		return Vector(aperture_min.x + x * (aperture_max.x - aperture_min.x),
+			aperture_min.y + y * (aperture_max.y - aperture_min.y), z - size[3])
 	end
 
 	local inset = -2
@@ -294,6 +299,7 @@ function ENT:CreatePhysmesh()
 		phys:EnableMotion(false)
 		phys:SetPos(self:GetPos())
 		phys:SetAngles(self:GetAngles())
+		self.SEAMLESS_PORTALS_MESH_REVISION = SeamlessPortals.CutoutMeshRevision
 		return true
 	end
 	return false
@@ -386,6 +392,9 @@ local function set_collision(ent, ent2, enable)
 
 	helper:SetPhysConstraintObjects(ent_phys, ent2_phys)
 	helper:Activate()
+	-- The native helper caches its last input, even after changing objects.
+	-- Repeated enables must also restore pairs disabled on an earlier crossing.
+	if not helper:SetSaveValue("m_succeeded", false) then return false end
 	helper:Input(enable and "EnableCollisions" or "DisableCollisions")
 
 	if IsValid(ent_phys) then
