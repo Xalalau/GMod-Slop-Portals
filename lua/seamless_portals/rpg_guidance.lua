@@ -6,6 +6,8 @@ SP.RPGGuidance=SP.RPGGuidance or setmetatable({},{__mode="k"})
 local records=SP.RPGGuidance
 SP.RPGLaserDots=SP.RPGLaserDots or setmetatable({},{__mode="k"})
 local dots=SP.RPGLaserDots
+SP.RPGAim=SP.RPGAim or setmetatable({},{__mode="k"})
+local aims=SP.RPGAim
 local function register(ent)
     if IsValid(ent) and ent:GetClass()=="env_laserdot" then dots[ent]=true end
 end
@@ -31,11 +33,66 @@ function SP.ClearRPGGuidance(missile)
             dot:SetOwner(IsValid(record.owner) and record.owner or NULL)
         end
         dot:SetNoDraw(record.old_nodraw)
+        dot:SetNWBool("seamless_portals_rpg_hidden",false)
         dot.SEAMLESS_PORTALS_RPG_RECORD=nil
     end
     records[missile]=nil
     SafeRemoveEntity(record.laser)
     SafeRemoveEntity(record.target)
+end
+function SP.CreateRPGLaserSprite(position)
+    local laser=ents.Create("env_sprite")
+    if not IsValid(laser) then return end
+    laser.SEAMLESS_PORTALS_GUIDANCE_DOT=true
+    laser.SEAMLESS_PORTALS_AI_PROXY=true
+    laser:SetKeyValue("model","sprites/redglow1.vmt")
+    laser:SetKeyValue("rendermode",tostring(RENDERMODE_GLOW))
+    laser:SetKeyValue("renderamt","255")
+    laser:SetKeyValue("scale","0.5")
+    laser:SetPos(position) laser:Spawn()
+    laser:SetMoveType(MOVETYPE_NONE) laser:SetNotSolid(true)
+    return laser
+end
+function SP.ClearRPGAim(owner)
+    local record=aims[owner]
+    if not record then return end
+    aims[owner]=nil
+    if IsValid(record.dot) and not record.dot.SEAMLESS_PORTALS_RPG_RECORD then
+        record.dot:SetNoDraw(record.old_nodraw)
+        record.dot:SetNWBool("seamless_portals_rpg_hidden",false)
+    end
+    SafeRemoveEntity(record.laser)
+end
+function SP.UpdateRPGAim(owner)
+    local damage=GetConVar("seamless_portals_damage")
+    local projectiles=GetConVar("seamless_portals_projectiles")
+    local weapon=IsValid(owner) and owner:GetActiveWeapon()
+    if not IsValid(weapon) or weapon:GetClass()~="weapon_rpg" or not owner:Alive()
+        or not SP.HasTraversablePortals() or (damage and not damage:GetBool())
+        or (projectiles and not projectiles:GetBool()) then SP.ClearRPGAim(owner) return false end
+    local dot=SP.GetRPGLaser(owner,weapon)
+    if not IsValid(dot) or dot:GetInternalVariable("m_bIsOn")==false or dot.SEAMLESS_PORTALS_RPG_RECORD then
+        SP.ClearRPGAim(owner) return false
+    end
+    local start=owner:GetShootPos()
+    local trace=SP.TracePortalLine({start=start,endpos=start+owner:GetAimVector()*56756,
+        filter={owner,weapon},mask=bit.band(MASK_SHOT,bit.bnot(CONTENTS_WINDOW)),SeamlessFeature="damage"})
+    local segments=trace.SeamlessSegments
+    local last=segments and segments[#segments]
+    if not last or last.StartSolid or last.AllSolid then SP.ClearRPGAim(owner) return false end
+    local record=aims[owner]
+    if record and record.dot~=dot then SP.ClearRPGAim(owner) record=nil end
+    if not record then
+        record={dot=dot,old_nodraw=dot:GetNoDraw()}
+        aims[owner]=record
+    end
+    if not IsValid(record.laser) then record.laser=SP.CreateRPGLaserSprite(last.HitPos) end
+    if not IsValid(record.laser) then SP.ClearRPGAim(owner) return false end
+    dot:SetNoDraw(true)
+    dot:SetNWBool("seamless_portals_rpg_hidden",true)
+    record.laser:SetPos(last.HitPos)
+    record.laser:SetNoDraw(last.Hit==false or last.HitSky==true)
+    return true
 end
 hook.Add("SeamlessPortalsProjectileTransferred","seamless_portals_rpg_guidance",function(ent,entry,exit)
     if ent:GetClass()~="rpg_missile" then return end
@@ -77,6 +134,8 @@ function SP.UpdateRPGGuidance(missile,record)
         records[missile]={entry=record.entry,exit=record.exit}
         return false
     end
+    -- Relinquish the preview before guidance records the native visibility.
+    SP.ClearRPGAim(owner)
     if not IsValid(record.target) then
         local target=ents.Create("info_target")
         if not IsValid(target) then return false end
@@ -86,16 +145,8 @@ function SP.UpdateRPGGuidance(missile,record)
         missile:DeleteOnRemove(target)
     end
     if not IsValid(record.laser) then
-        local laser=ents.Create("env_sprite")
+        local laser=SP.CreateRPGLaserSprite(segment.HitPos)
         if not IsValid(laser) then SP.ClearRPGGuidance(missile) return false end
-        laser.SEAMLESS_PORTALS_GUIDANCE_DOT=true
-        laser.SEAMLESS_PORTALS_AI_PROXY=true
-        laser:SetKeyValue("model","sprites/redglow1.vmt")
-        laser:SetKeyValue("rendermode",tostring(RENDERMODE_GLOW))
-        laser:SetKeyValue("renderamt","255")
-        laser:SetKeyValue("scale","0.5")
-        laser:SetPos(segment.HitPos) laser:Spawn()
-        laser:SetMoveType(MOVETYPE_NONE) laser:SetNotSolid(true)
         record.laser=laser
         missile:DeleteOnRemove(laser)
     end
@@ -109,6 +160,7 @@ function SP.UpdateRPGGuidance(missile,record)
     -- The native dot stays under weapon control, but no longer competes for
     -- this player's missile. Restore its owner and visibility on every exit.
     dot:SetOwner(record.target) dot:SetNoDraw(true)
+    dot:SetNWBool("seamless_portals_rpg_hidden",true)
     record.laser:SetPos(segment.HitPos)
     if record.steered_tick~=engine.TickCount() then
         local velocity=missile:GetVelocity()
@@ -138,6 +190,10 @@ function SP.RPGGuidePoint(position,segment)
 end
 hook.Add("Tick","seamless_portals_rpg_guidance",function()
     for missile,record in pairs(records) do SP.UpdateRPGGuidance(missile,record) end
+    for owner in pairs(aims) do if not IsValid(owner) then SP.ClearRPGAim(owner) end end
+    if SP.HasTraversablePortals() or next(aims) then
+        for _,owner in ipairs(player.GetAll()) do SP.UpdateRPGAim(owner) end
+    end
 end)
 hook.Add("PlayerPostThink","seamless_portals_rpg_guidance",function(ply)
     for missile,record in pairs(records) do
@@ -153,6 +209,7 @@ hook.Add("EntityRemoved","seamless_portals_rpg_guidance",function(ent)
 end)
 local function cleanup()
     for missile in pairs(records) do SP.ClearRPGGuidance(missile) end
+    for owner in pairs(aims) do SP.ClearRPGAim(owner) end
 end
 hook.Add("PostCleanupMap","seamless_portals_rpg_guidance",cleanup)
 hook.Add("ShutDown","seamless_portals_rpg_guidance",cleanup)
