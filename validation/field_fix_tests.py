@@ -490,6 +490,141 @@ assert(#emitted==2);nearvec(emitted[2].data:GetOrigin(),trace.HitPos)
 assert(util.TraceHull==raw and util.TraceLine==SP.TraceOwnership.wrapper)
 assert(calls<12)
 ''')
+    npc_fixture = r'''
+local SP=SeamlessPortals
+D_HT,D_NU=1,4
+NPC_STATE_IDLE,NPC_STATE_COMBAT,NPC_STATE_SCRIPT=1,3,5
+SCHED_RANGE_ATTACK1,SOLID_NONE=16,0
+COND={NEW_ENEMY=1,SEE_ENEMY=2,ENEMY_OCCLUDED=3}
+local a,b=pair()
+local target=player();target:SetPos(Vector(200,0,20))
+function target:WorldSpaceCenter() return self:GetPos()+Vector(0,0,4) end
+player={GetAll=function() return {target} end}
+local function native_npc(class)
+ local e=prop(Vector(0,0,30))
+ e.life=0;e.health=100;e.state=NPC_STATE_IDLE;e.enemy=NULL;e.relations={}
+ function e:IsNPC() return true end
+ function e:GetClass() return class end
+ function e:GetInternalVariable(key)
+  if key=='m_lifeState' then return self.life end
+  if key=='m_bEnabled' then return self.enabled end
+ end
+ function e:GetSpawnFlags() return self.flags or 0 end
+ function e:Health() return self.health end
+ function e:IsScripted() return self.scripted or false end
+ function e:GetNPCState() return self.state end
+ function e:SetNPCState(v) self.state=v end
+ function e:EyePos() return self:GetPos() end
+ function e:IsInViewCone() return not self.outside_cone end
+ function e:SetEyeTarget(v) self.eye_target=v end
+ function e:Disposition(other) return self.relations[other] or D_HT end
+ function e:AddEntityRelationship(other,v) self.relations[other]=v end
+ function e:GetActiveWeapon() return self.weapon or NULL end
+ function e:GetEnemy() return self.enemy end
+ function e:SetEnemy(v) self.enemy=v end
+ function e:Visible() return self.visible or false end
+ function e:ClearEnemyMemory(v) self.cleared=v end
+ function e:UpdateEnemyMemory(v,pos) self.remembered=v;self.remembered_pos=pos end
+ function e:SetCondition() end
+ function e:ClearCondition() end
+ function e:SetIdealYaw() end
+ function e:SetSchedule(v) self.schedule=v;self.schedules=(self.schedules or 0)+1 end
+ return e
+end
+local made={}
+function ents.Create(class)
+ assert(class=='npc_bullseye')
+ local proxy=native_npc(class);made[#made+1]=proxy
+ function proxy:Spawn() end
+ function proxy:SetSolid(v) self.solid=v end
+ function proxy:SetSaveValue() end
+ function proxy:SetCollisionBounds() end
+ return proxy
+end
+local occluded=false
+function SP.PortalSight()
+ if not occluded then return {point=Vector(),virtual=Vector(0,0,-20),distance=50} end
+end
+function SP.UpdateNPCNavigation() return false end
+''' + src('lua/seamless_portals/npc_awareness.lua')
+    test('F-T30', 'Native NPCs without held weapons acquire a hostile portal target without forced gun schedules', npc_fixture + r'''
+for _,class in ipairs({'npc_antlionguard','npc_rollermine','npc_cscanner','npc_clawscanner','npc_turret_floor','npc_turret_ceiling','npc_zombie','npc_manhack'}) do
+ local npc=native_npc(class)
+ if class=='npc_rollermine' then npc.health=0 end
+ SP.UpdateNPCAttention(npc,{target})
+ local r=assert(SP.NPCAttention[npc],class)
+ assert(npc:GetEnemy()==r.proxy and npc:Disposition(r.proxy)==D_HT and npc.schedule==nil)
+ assert(r.proxy.solid==SOLID_NONE)
+ SP.ClearNPCAttention(npc)
+ assert(not IsValid(r.proxy) and npc:GetEnemy()==NULL and npc.state==NPC_STATE_IDLE)
+end
+local npc=native_npc('npc_combine_s');npc.weapon=prop()
+SP.UpdateNPCAttention(npc,{target});SP.UpdateNPCAttention(npc,{target})
+assert(npc.schedules==1 and npc.schedule==SCHED_RANGE_ATTACK1)
+''')
+    test('F-T31', 'Native life state rejects dying NPCs but admits live zero-health mines', npc_fixture + r'''
+local npc=native_npc('npc_rollermine');npc.health=0
+SP.UpdateNPCAttention(npc,{target});assert(SP.NPCAttention[npc])
+npc.life=1;npc.health=100
+SP.UpdateNPCAttention(npc,{target});assert(not SP.NPCAttention[npc])
+npc.life=nil
+SP.UpdateNPCAttention(npc,{target});assert(SP.NPCAttention[npc])
+npc.health=0
+SP.UpdateNPCAttention(npc,{target});assert(not SP.NPCAttention[npc])
+''')
+    test('F-T32', 'Losing portal sight during a native shot retains its enemy until Think retires the proxy', npc_fixture + r'''
+local npc=native_npc('npc_turret_floor')
+SP.UpdateNPCAttention(npc,{target})
+local r=assert(SP.NPCAttention[npc]);local proxy=r.proxy
+local bullet={Src=Vector(0,0,25),Dir=Vector(1,0,0)}
+SP.AdjustNPCPortalBullet(npc,bullet)
+nearvec(bullet.Dir,Vector(0,0,-1))
+occluded=true;bullet.Dir=Vector(1,0,0)
+SP.AdjustNPCPortalBullet(npc,bullet)
+assert(npc:GetEnemy()==proxy and IsValid(proxy) and npc.cleared==nil)
+assert(SP.NPCAttention[npc]==r and r.expires==0)
+nearvec(bullet.Dir,Vector(1,0,0))
+hook.Run('Think')
+assert(not SP.NPCAttention[npc] and not IsValid(proxy) and npc:GetEnemy()==NULL)
+assert(npc.cleared==proxy)
+occluded=false;SP.UpdateNPCAttention(npc,{target})
+assert(SP.NPCAttention[npc] and npc:GetEnemy()~=proxy)
+''')
+    test('F-T33', 'Deferred NPC attention cleanup preserves a replacement native enemy', npc_fixture + r'''
+local npc=native_npc('npc_turret_floor')
+SP.UpdateNPCAttention(npc,{target})
+local proxy=npc:GetEnemy()
+occluded=true;SP.AdjustNPCPortalBullet(npc,{Src=Vector(0,0,25),Dir=Vector(0,0,-1)})
+local other=prop();npc:SetEnemy(other)
+hook.Run('Think')
+assert(npc:GetEnemy()==other and not IsValid(proxy) and not SP.NPCAttention[npc])
+''')
+    test('F-T34', 'NPC portal attention respects disposition, native FOV, scripts and disabled damage', npc_fixture + r'''
+local npc=native_npc('npc_turret_floor')
+npc:AddEntityRelationship(target,D_NU,99)
+SP.UpdateNPCAttention(npc,{target});assert(not SP.NPCAttention[npc])
+npc:AddEntityRelationship(target,D_HT,99);npc.outside_cone=true
+SP.UpdateNPCAttention(npc,{target});assert(not SP.NPCAttention[npc])
+npc.outside_cone=false;npc.scripted=true
+SP.UpdateNPCAttention(npc,{target});assert(not SP.NPCAttention[npc])
+npc.scripted=false;SP.SetFeature(b,'damage',false)
+SP.UpdateNPCAttention(npc,{target});assert(not SP.NPCAttention[npc])
+SP.SetFeature(b,'damage',true);SP.UpdateNPCAttention(npc,{target});assert(SP.NPCAttention[npc])
+CreateConVar('ai_ignoreplayers','1')
+SP.UpdateNPCAttention(npc,{target});assert(not SP.NPCAttention[npc])
+''')
+    test('F-T35', 'Enabled wall cameras retain verified proxy interest and respect ignore-enemies flags', npc_fixture + r'''
+local npc=native_npc('npc_combine_camera');npc.enabled=false
+SP.UpdateNPCAttention(npc,{target});assert(not SP.NPCAttention[npc])
+npc.enabled=true;npc.flags=64
+SP.UpdateNPCAttention(npc,{target});assert(not SP.NPCAttention[npc])
+npc.flags=0;SP.UpdateNPCAttention(npc,{target})
+local proxy=assert(SP.NPCAttention[npc]).proxy
+npc:AddEntityRelationship(proxy,D_NU,99)
+SP.UpdateNPCAttention(npc,{target});assert(npc:Disposition(proxy)==D_HT)
+occluded=true;SP.UpdateNPCAttention(npc,{target})
+assert(not SP.NPCAttention[npc] and not IsValid(proxy))
+''')
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
                   failed=sum(r['status'] == 'FAIL' for r in results))

@@ -32,7 +32,13 @@ function SP.ClearNPCAttention(npc)
 end
 local function allowed(npc)
     local disabled,ignore=GetConVar("ai_disabled"),GetConVar("ai_ignoreplayers")
-    return enabled:GetBool() and IsValid(npc) and npc:Health()>0 and not npc:IsScripted()
+    if not IsValid(npc) then return false end
+    -- Some native NPCs, including live Rollermines, have zero numeric health.
+    local life=npc:GetInternalVariable("m_lifeState")
+    local alive=life==0 or (life==nil and npc:Health()>0)
+    if npc:GetClass()=="npc_combine_camera" and (npc:GetInternalVariable("m_bEnabled")==false
+        or bit.band(npc:GetSpawnFlags(),64)~=0) then return false end
+    return enabled:GetBool() and alive and not npc:IsScripted()
         and npc:GetNPCState()~=NPC_STATE_SCRIPT and not (disabled and disabled:GetBool())
         and not (ignore and ignore:GetBool())
 end
@@ -67,8 +73,8 @@ function SP.UpdateNPCAttention(npc,players)
     if not c then SP.ClearNPCAttention(npc) return end
     -- A look target does not change friendly disposition or fabricate hostility.
     npc:SetEyeTarget(c.sight.virtual)
-    if npc:Disposition(c.player)~=D_HT or not armed_classes[npc:GetClass()]
-        or not IsValid(npc:GetActiveWeapon()) or not SP.LinkAllows(c.entry,c.exit,"damage") then
+    local armed=armed_classes[npc:GetClass()] and IsValid(npc:GetActiveWeapon())
+    if npc:Disposition(c.player)~=D_HT or not SP.LinkAllows(c.entry,c.exit,"damage") then
         SP.ClearNPCAttention(npc) return
     end
     local r=records[npc]
@@ -90,15 +96,22 @@ function SP.UpdateNPCAttention(npc,players)
         for _,other in ipairs(npcs) do if IsValid(other) and other~=npc then other:AddEntityRelationship(proxy,D_NU,99) end end
         npc:AddEntityRelationship(proxy,D_HT,99)
         npc:SetEnemy(proxy) npc:SetNPCState(NPC_STATE_COMBAT)
+        if COND then npc:SetCondition(COND.NEW_ENEMY) end
         SP.CountField("npc_attention_acquired")
     end
     r.entry,r.exit,r.player=c.entry,c.exit,c.player
     local attention=c.sight.point+(npc:EyePos()-c.sight.point):GetNormalized()*2
     r.proxy:SetPos(attention) npc:UpdateEnemyMemory(r.proxy,attention)
+    if npc:GetClass()=="npc_combine_camera" then
+        -- The native camera dismisses non-player targets after inspecting them.
+        -- Keep our verified player stand-in eligible for its native tracker.
+        if npc:Disposition(r.proxy)~=D_HT then npc:AddEntityRelationship(r.proxy,D_HT,99) end
+    end
     if COND then npc:SetCondition(COND.SEE_ENEMY) npc:ClearCondition(COND.ENEMY_OCCLUDED) end
     -- Face naturally; do not restart a firing/reload animation every update.
     npc:SetIdealYaw((attention-npc:GetPos()):Angle().y)
-    if not r.scheduled then npc:SetSchedule(SCHED_RANGE_ATTACK1) r.scheduled=true end
+    -- Scanners, guards and mines select their own native reaction to an enemy.
+    if armed and not r.scheduled then npc:SetSchedule(SCHED_RANGE_ATTACK1) r.scheduled=true end
     r.expires=CurTime()+1
 end
 function SP.AdjustNPCPortalBullet(npc,data)
@@ -108,7 +121,9 @@ function SP.AdjustNPCPortalBullet(npc,data)
     -- Native weapon muzzle and EyePos differ; re-derive the target at the exact
     -- bullet Src, not by aiming at a near-plane dummy with parallax error.
     local path=SP.PortalSight(r.entry,r.exit,data.Src,r.player:WorldSpaceCenter(),npc,r.player)
-    if not path then SP.ClearNPCAttention(npc) return end
+    -- FireBullets runs inside native attack code, which can still dereference
+    -- GetEnemy() after this callback. Retire it from Think after the shot ends.
+    if not path then r.expires=0 return end
     data.Dir=(path.virtual-data.Src):GetNormalized()
     SP.CountField("npc_portal_shots")
 end
