@@ -368,3 +368,8 @@ end
 function ENT:OnTakeDamage(info)
     if SeamlessPortals.ObserveNativeBlast then SeamlessPortals.ObserveNativeBlast(self,info,false) end
 end
+
+function ENT:OnTraceAttack(info,direction,trace)
+    if SeamlessPortals.RelayPortalMelee then SeamlessPortals.RelayPortalMelee(self,info,direction,trace) end
+    info:SetDamage(0)
+end

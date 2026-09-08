@@ -38,7 +38,7 @@ SeamlessPortals.TracePortalLine = function(data, trace_function)
         remaining_fraction = remaining_fraction * (1-segment_fraction)
         local direction = (work.endpos-work.start):GetNormalized()
         if hop == max_hops or remaining_fraction <= 1e-8
-            or not SP.CanCrossTrace(result, work.start, direction) then break end
+            or not SP.CanCrossTrace(result, work.start, direction, data.SeamlessFeature) then break end
         local entry, exit = result.Entity, result.Entity:GetExitPortal()
         local new_start = SP.TransformPortal(entry, exit, result.HitPos)
         local new_end = SP.TransformPortal(entry, exit, work.endpos)

@@ -86,10 +86,13 @@ function ENT:UpdatePhysmesh(size, sides)
 	local phys = self:GetPhysicsObject()
 	if not IsValid(phys) then return false end
 	phys:EnableMotion(false)
-	phys:SetMaterial("glass")
+	phys:SetMaterial("default")
 	phys:SetMass(250)
 	return true
 end
+
+-- Keep the collider available to bullet continuation, without a local impact.
+function ENT:ImpactTrace() return true end
 
 SeamlessPortals.Portals = SeamlessPortals.Portals or {}
 SeamlessPortals.TransformPortal = function(a, b, pos, ang)
