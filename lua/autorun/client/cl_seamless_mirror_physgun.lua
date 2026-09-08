@@ -10,7 +10,14 @@ local function mirrored_view(ply,weapon)
         and IsValid(weapon) and weapon:GetClass()=="weapon_physgun"
 end
 function SP.MirrorPhysgunContext(ply,weapon,enabled,target,bone,local_hit)
-    if not mirrored_view(ply,weapon) then return end
+    if not mirrored_view(ply,weapon) then
+        if IsValid(target) and (SP.IsPortal(target:GetNWEntity("seamless_portals_clip_entry"))
+            or target:GetClass()=="seamless_portal_clone") then
+            -- Keep the native beam; skip Sandbox's collection of held halos.
+            return true
+        end
+        return
+    end
     local hit
     if enabled and IsValid(target) and isvector(local_hit) then
         local matrix=target:GetBoneMatrix(target:TranslatePhysBoneToBone(bone or 0))

@@ -363,6 +363,21 @@ assert(not SP.TraceReturningBolt(bolt,{},.015))
 target=WORLD;assert(not SP.TraceReturningBolt(bolt,{returning=true},.015))
 assert(hits==0 and sounds==0 and IsValid(bolt) and bolt:GetOwner()==p)
 ''', modules['projectiles'])
+    test('F-T24', 'Physgun skips Sandbox halo collection only while its target is crossing', r'''
+CLIENT=true;SERVER=false
+function Material() return {} end
+local p=player();function LocalPlayer() return p end
+local SP=SeamlessPortals;SP.ToggleMirror=function() return false end
+''' + src('lua/autorun/client/cl_seamless_mirror_physgun.lua') + r'''
+local a,b=pair();local e=prop()
+function e:GetNWEntity() return self.clip or NULL end
+function e:SetNWEntity(key,value) self.clip=value end
+assert(SP.MirrorPhysgunContext(p,NULL,true,e,0,Vector())==nil)
+e:SetNWEntity('seamless_portals_clip_entry',a)
+assert(SP.MirrorPhysgunContext(p,NULL,true,e,0,Vector())==true)
+e:SetNWEntity('seamless_portals_clip_entry',NULL)
+assert(SP.MirrorPhysgunContext(p,NULL,true,e,0,Vector())==nil)
+''')
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
                   failed=sum(r['status'] == 'FAIL' for r in results))
