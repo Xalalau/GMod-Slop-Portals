@@ -63,7 +63,7 @@ function prop(...)
 end
 '''
     modules = {name: src('lua/seamless_portals/' + name + '.lua') for name in
-               ['blasts', 'holding', 'carry', 'projectiles', 'traces', 'melee', 'rpg_guidance']}
+               ['blasts', 'holding', 'carry', 'projectiles', 'traces', 'melee', 'rpg_guidance', 'bullets']}
 
     def test(id, title, code, load=''):
         try:
@@ -281,6 +281,20 @@ assert(ENT.TestCollision(p,Vector(),Vector(56756,0,0),false,Vector(),MASK_SHOT)=
 assert(ENT.TestCollision(p,Vector(600,10,0),Vector(0,-30,0),false,Vector(),MASK_SHOT)==true)
 assert(ENT.TestCollision(p,Vector(),Vector(56756,0,0),true,Vector(1,1,1),MASK_SHOT)==true)
 ''')
+    test('F-T19', 'Returning shots can hit their owner while preserving unrelated exclusions', r'''
+local SP=SeamlessPortals;local a,b=pair();local p=player();local foreign=prop()
+local data={Src=Vector(0,0,10),Dir=Vector(0,0,-1),Damage=17,IgnoreEntity=p}
+local tr={Hit=true,Entity=a,StartPos=data.Src,HitPos=Vector(),HitNormal=a:GetUp()}
+local captured
+SP.FirePortalContinuation=function(shooter,bullet) captured=bullet end
+local d=DamageInfo();d:SetDamage(17)
+SP.PortalBulletCallback(p,data,nil,0)(p,tr,d)
+assert(captured and captured.IgnoreEntity==nil and captured.Attacker==p)
+assert(data.IgnoreEntity==p)
+data.IgnoreEntity=foreign
+SP.PortalBulletCallback(p,data,nil,0)(p,tr,d)
+assert(captured.IgnoreEntity==foreign)
+''', modules['traces'] + modules['bullets'])
     report = dict(native_gmod_tested=False, tests=results,
                   passed=sum(r['status'] == 'PASS' for r in results),
                   failed=sum(r['status'] == 'FAIL' for r in results))

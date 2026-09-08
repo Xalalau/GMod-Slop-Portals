@@ -43,7 +43,10 @@ function SP.PortalBulletCallback(shooter, data, original, hops, inherited_visual
         next_data.Src = SP.TransformPortal(entry, exit, tr.HitPos) + next_dir * clearance
         next_data.Dir, next_data.Spread, next_data.Num = next_dir, Vector(0,0,0), 1
         next_data.Distance = range-clearance
-        -- Preserve the caller's IgnoreEntity. The normal-space nudge clears the exit.
+        -- Weapons often explicitly ignore their owner on the initial ray. That
+        -- immunity belongs to the source room, not the unfolded continuation.
+        if next_data.IgnoreEntity==shooter or next_data.IgnoreEntity==attacker then next_data.IgnoreEntity=nil end
+        -- Keep unrelated exclusions, such as a vehicle the weapon is mounted on.
         next_data.Attacker = IsValid(attacker) and attacker or shooter
         -- Damage=0 requests ammo-defined damage; replacing it with the damage
         -- calculated against the portal can change damage to players/NPCs.
