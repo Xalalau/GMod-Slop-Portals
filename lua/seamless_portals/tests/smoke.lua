@@ -39,6 +39,7 @@ local paths = {
     "seamless_portals/npc_navigation.lua",
     "seamless_portals/npc_transition.lua",
     "seamless_portals/projectiles.lua",
+    "seamless_portals/properties.lua",
     "seamless_portals/rpg_guidance.lua",
     "seamless_portals/tracers.lua",
     "seamless_portals/bullets.lua",
@@ -69,6 +70,7 @@ local server_only = {
     ["seamless_portals/npc_awareness.lua"] = true,
     ["seamless_portals/npc_navigation.lua"] = true,
     ["seamless_portals/projectiles.lua"] = true,
+    ["seamless_portals/properties.lua"] = true,
     ["seamless_portals/rpg_guidance.lua"] = true,
     ["autorun/server/sv_portals_pvs.lua"] = true,
     ["entities/seamless_portal/init.lua"] = true,
@@ -98,6 +100,7 @@ for _, name in ipairs({"FeatureEnabled", "InAperture", "TracePortalLine", "Porta
     assert(isfunction(SP[name]), "Missing inherited RC2 API: " .. name)
 end
 if SERVER then
+    assert(isfunction(SP.CanTargetPropertyThroughPortal), "Missing context-menu range adapter")
     for _,name in ipairs({"PlanTransport","CommitTransport","SnapshotDamage","CopyDamage","RelayBlast","RelayPortalMelee","TransferProjectile","UpdateRPGGuidance"}) do
         assert(isfunction(SP[name]),"Missing field API: "..name)
     end

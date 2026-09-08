@@ -17,6 +17,7 @@ include("seamless_portals/npc_transition.lua")
 AddCSLuaFile("seamless_portals/melee.lua")
 include("seamless_portals/melee.lua")
 if SERVER then
+    include("seamless_portals/properties.lua")
     include("seamless_portals/blasts.lua")
     include("seamless_portals/projectiles.lua")
     include("seamless_portals/rpg_guidance.lua")
