@@ -99,6 +99,7 @@ end
 function SP.IsUsableLink(entry, exit)
     return SP.IsPortal(entry) and SP.IsPortal(exit)
         and not entry.SEAMLESS_PORTALS_GEOMETRY_FAILED and not exit.SEAMLESS_PORTALS_GEOMETRY_FAILED
+        and entry.GetSize
         and SP.AspectCompatibleSize(entry:GetSize(), exit:GetSize())
 end
 
