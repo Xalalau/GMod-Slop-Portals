@@ -10,7 +10,7 @@ ENT.DisableDuplicator = true
 ENT.ENTITIES          = {}
 ENT.VERTICES          = {}
 
-SeamlessPortals.CutoutMeshRevision = 1
+SeamlessPortals.CutoutMeshRevision = 2
 
 -- SERVER only entity
 -- physically cuts a hole in the world,
@@ -159,7 +159,8 @@ function ENT:GeneratePhysmesh(portal, exit_portal)
         filter = function() return false end, -- exclude entities; world is traced separately
 		})
 
-		if !tr.Hit then return nil end
+		-- A trace born inside the mounting wall has no usable surface normal.
+        if not tr.Hit or tr.StartSolid or tr.AllSolid or tr.HitNormal:LengthSqr() < 0.5 then return nil end
 
 		tr.HitAngle = portal:WorldToLocalAngles(tr.HitNormal:Angle())
 		tr.HitPos = portal:WorldToLocal(tr.HitPos)
@@ -169,12 +170,15 @@ function ENT:GeneratePhysmesh(portal, exit_portal)
 		generate_quad(tr.HitPos - front + right, tr.HitPos + front + right, tr.HitPos - front - right, tr.HitPos + front - right)
 	end
 
-    -- ground quads
-    trace_local_generate_quad(pos_local(0.5, 0.5, offset[3]), pos_local(2.5, 0.5, offset[3]))
-    trace_local_generate_quad(pos_local(0.5, 0.5, offset[3]), pos_local(-1.5, 0.5, offset[3]))
-    trace_local_generate_quad(pos_local(0.5, 0.5, offset[3]), pos_local(0.5, 2.5, offset[3]))
-    trace_local_generate_quad(pos_local(0.5, 0.5, offset[3]), pos_local(0.5, -1.5, offset[3]))
-	trace_local_generate_quad(pos_local(0.5, 0.5, offset[3]), pos_local(0.5, 0.5, offset[1] * 3))
+    -- Sample the visible room. The decorative slab extends behind z=0 and
+    -- may already be inside the wall that this opening is meant to remove.
+    local surface_z = size.z + 0.5
+    local surface_start = pos_local(0.5, 0.5, surface_z)
+    trace_local_generate_quad(surface_start, pos_local(2.5, 0.5, surface_z))
+    trace_local_generate_quad(surface_start, pos_local(-1.5, 0.5, surface_z))
+    trace_local_generate_quad(surface_start, pos_local(0.5, 2.5, surface_z))
+    trace_local_generate_quad(surface_start, pos_local(0.5, -1.5, surface_z))
+    trace_local_generate_quad(surface_start, pos_local(0.5, 0.5, offset[1] * 3))
 
 	-- inner quads
 	if !exit_portal then

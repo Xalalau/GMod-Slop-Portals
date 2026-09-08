@@ -105,7 +105,7 @@ util.IntersectRayWithPlane=function(start,delta,point,normal)
  if math.abs(denominator)<1e-8 then return end
  return start+delta*((point-start):Dot(normal)/denominator)
 end
-local function support_mesh(axis,sign,sides,gap,reverse)
+local function support_mesh(axis,sign,sides,gap,reverse,rear_wall)
  local p=portal(Vector(100,147.1,8),sides)
  local lo,hi=SeamlessPortals.GetApertureBounds(p:GetSize(),sides)
  local floor=(sign==1 and hi[axis] or lo[axis])+sign*gap
@@ -117,6 +117,9 @@ local function support_mesh(axis,sign,sides,gap,reverse)
  end
  SeamlessPortals.TraceLine=function(data)
   assert(data.mask==MASK_SOLID_BRUSHONLY and data.filter(p)==false)
+  if rear_wall and data.start.z < -rear_wall then
+   return {Hit=true,StartSolid=true,AllSolid=true,Fraction=0,HitPos=data.start,HitNormal=Vector()}
+  end
   local delta=data.endpos-data.start
   local fraction=delta[axis]~=0 and (floor-data.start[axis])/delta[axis] or -1
   local hit=fraction>=0 and fraction<=1
@@ -185,6 +188,122 @@ assert(pair_enabled(phys,world) and not pair_enabled(phys,cutout_phys))
 assert(c:AddProxy(e));assert(pair_enabled(phys,cutout_phys) and not pair_enabled(phys,world))
 c:RemoveProxy(e);assert(pair_enabled(phys,world) and e.SEAMLESS_PORTALS_PROXY_CUTOUT==nil)
 ''')
+    coupling = src('lua/entities/seamless_portal_clone.lua', '    local function coupling_excess', '\n\tfunction ENT:Initialize()')
+    coupling_setup = (Path(__file__).parent / 'custom_stubs.lua').read_text() + r'''
+local a,b=pair()
+local clone,child=prop(),prop()
+local one,two=clone:GetPhysicsObject(),child:GetPhysicsObject()
+local angle_meta=getmetatable(Angle())
+function angle_meta:Normalize() for i=1,3 do self[i]=(self[i]+180)%360-180 end end
+function WorldToLocal(pos,ang,origin,angles)
+ return pos-origin,Angle(ang[1]-angles[1],ang[2]-angles[2],ang[3]-angles[3])
+end
+SeamlessPortals.TransformPortal=function(_,_,pos,ang) return Vector(pos),Angle(ang) end
+SeamlessPortals.HasTrackedHold=function() return false end
+function transform_portal_local(_,_,v) return Vector(v) end
+SeamlessPortals.TransformDirection=transform_portal_local
+for _,e in ipairs({clone,child}) do
+ function e:GetModelScale() return 1 end
+ function e:BoundingRadius() return self.radius or 24 end
+end
+function clone:GetPortal1() return a end
+function clone:GetPortal2() return b end
+clone.VerletWeld=ENT.VerletWeld
+for _,p in ipairs({one,two}) do
+ p.vel,p.angular=Vector(),Vector();p.masscenter=Vector();p.writes=0;p.contacts={{}}
+ function p:IsAsleep() return self.asleep==true end
+ function p:GetFrictionSnapshot() return self.contacts end
+ function p:GetMassCenter() return Vector(self.masscenter) end
+ function p:LocalToWorld(v) return self.pos+v end
+ function p:LocalToWorldVector(v) return Vector(v) end
+ function p:WorldToLocalVector(v) return Vector(v) end
+ function p:SetVelocity(v) self.vel=Vector(v);self.writes=self.writes+1;self.asleep=false end
+ function p:SetAngleVelocity(v) self.angular=Vector(v);self.writes=self.writes+1;self.asleep=false end
+end
+'''
+    # Put the fixture after the source so it binds the actual entity method.
+    def resting(code):
+        return coupling + coupling_setup + code
+    test('P51','Supported coherent props settle without controller writes or freezing',['F03'],resting('''
+one.pos=Vector(0.1,0,0);one.ang=Angle(0,1,0)
+one.vel=Vector(0.1,0,0);two.vel=Vector(0,0.1,0)
+assert(clone:VerletWeld(clone,child));assert(one.writes==0 and two.writes==0)
+assert(one.motion and two.motion and one.motion_writes==0 and two.motion_writes==0)
+nearvec(one.vel,Vector(0.1,0,0));nearvec(two.vel,Vector(0,0.1,0))
+'''))
+    test('P52','Free bodies and a pushed remote body still exchange motion',['F03'],resting('''
+one.contacts={};two.contacts={};one.vel=Vector(120,0,0)
+assert(clone:VerletWeld(clone,child));nearvec(two.vel,Vector(60,0,0));nearvec(one.vel,two.vel)
+one.contacts={{}};two.contacts={{}};one.asleep=true;two.asleep=true
+one.vel=Vector(0,80,0);one.asleep=false;two.vel=Vector()
+assert(clone:VerletWeld(clone,child));assert(two.vel.y>0 and not two.asleep)
+'''))
+    test('P53','Loss of support resumes coupling and preserves falling velocity',['F03'],resting('''
+one.asleep=true;two.asleep=true
+assert(clone:VerletWeld(clone,child));assert(one.writes==0 and two.writes==0)
+one.asleep=false;one.contacts={};one.vel=Vector(0,0,-4)
+assert(clone:VerletWeld(clone,child));assert(two.vel.z<0 and two.writes>0)
+'''))
+    test('P54','Position corrections use mass centers instead of offset model origins',['F03'],resting('''
+one.contacts={};two.contacts={};one.pos=Vector(4,0,0);one.masscenter=Vector(-4,0,0)
+one.vel=Vector(0,0,-20);two.vel=Vector(0,0,-20)
+assert(clone:VerletWeld(clone,child));nearvec(one.vel,Vector(0,0,-20));nearvec(two.vel,one.vel)
+'''))
+    test('P55','Contact margin does not add torque to a coherently rotating body',['F03'],resting('''
+one.ang=Angle(0,1,0);one.angular=Vector(0,0,30);two.angular=Vector(0,0,30)
+assert(clone:VerletWeld(clone,child));nearvec(one.angular,Vector(0,0,30));nearvec(two.angular,one.angular)
+'''))
+    test('P56','Large pose errors and large prop surface offsets are corrected',['F03'],resting('''
+one.pos=Vector(3,0,0);assert(clone:VerletWeld(clone,child));assert(one.vel.x<0 and two.vel.x>0)
+one.pos=Vector();one.vel=Vector();two.vel=Vector();one.ang=Angle(0,2,0);child.radius=200
+assert(clone:VerletWeld(clone,child));assert(one.angular.z<0 and two.angular.z>0)
+'''))
+
+    test('P57','Angular synchronization uses a common physical frame',['F03'],resting('''
+local angle=math.pi/180
+function one:LocalToWorldVector(v)
+ return Vector(v.x*math.cos(angle)-v.y*math.sin(angle),v.x*math.sin(angle)+v.y*math.cos(angle),v.z)
+end
+function one:WorldToLocalVector(v)
+ return Vector(v.x*math.cos(angle)+v.y*math.sin(angle),-v.x*math.sin(angle)+v.y*math.cos(angle),v.z)
+end
+one.ang=Angle(0,1,0);two.angular=Vector(30,0,0);one.angular=one:WorldToLocalVector(two.angular)
+assert(clone:VerletWeld(clone,child));nearvec(two.angular,Vector(30,0,0))
+nearvec(one:LocalToWorldVector(one.angular),two.angular)
+'''))
+
+    test('P58','The settling band stops corrections just outside the contact slop',['F03'],resting('''
+one.pos=Vector(0.55,0,0);one.vel=Vector(0.1,0,0);two.vel=Vector(0.2,0,0)
+assert(clone:VerletWeld(clone,child));assert(one.writes==0 and two.writes==0)
+'''))
+    test('P59','Sleeping bodies with a changed pose resume synchronization',['F03'],resting('''
+one.asleep=true;two.asleep=true;one.pos=Vector(3,0,0)
+assert(clone:VerletWeld(clone,child));assert(one.writes>0 and two.writes>0)
+assert(not one.asleep and not two.asleep)
+'''))
+
+    test('P60','Floor support survives a mounting wall behind the aperture',['F03'],surface+surface_setup+'''
+for _,wall in ipairs({0.1,1,2,4}) do
+ for _,reverse in ipairs({false,true}) do support_mesh(1,1,4,0.1,reverse,wall) end
+end
+''')
+    surface_probe = src('lua/entities/seamless_portal_cutout.lua', '\tlocal function trace_local_generate_quad', '\n    -- Sample the visible room.')
+    probe_setup = '''
+local size=Vector(100,100,8)
+local portal=portal(size)
+function portal:WorldToLocalAngles() return {Right=function() return Vector(0,1,0) end,Up=function() return Vector(0,0,1) end} end
+local writes=0
+local function generate_quad() writes=writes+1 end
+local result={Hit=true,HitNormal=Vector(1,0,0),HitPos=Vector()}
+SeamlessPortals.TraceLine=function() return result end
+'''
+    test('P61','Solid-origin and invalid-normal probes cannot create collision planes',['F03'],probe_setup+surface_probe+'''
+result.StartSolid=true;trace_local_generate_quad(Vector(),Vector(100,0,0));assert(writes==0)
+result.StartSolid=false;result.AllSolid=true;trace_local_generate_quad(Vector(),Vector(100,0,0));assert(writes==0)
+result.AllSolid=false;result.HitNormal=Vector();trace_local_generate_quad(Vector(),Vector(100,0,0));assert(writes==0)
+result.HitNormal=Vector(1,0,0);trace_local_generate_quad(Vector(),Vector(100,0,0));assert(writes==1)
+''')
+
     # Test real Python build/check functions with temporary files and deterministic byte checks.
     try:
         release_path=root/'tools/build_release.py';spec=importlib.util.spec_from_file_location('release_candidate',release_path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)

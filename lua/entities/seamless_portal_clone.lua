@@ -172,6 +172,11 @@ if SERVER then
         if IsValid(self) then set_model_scale_checked(self, transaction.clone_scale) end
     end
 
+    local function coupling_excess(delta, slop)
+        local length = delta:Length()
+        return length > slop and delta * (1 - slop / length) or vector_origin
+    end
+
 	-- 2 way coupling
 	function ENT:VerletWeld(e1, e2, setpos, skip_scale)
 		if not IsValid(e1) or not IsValid(e2) or not SeamlessPortals.IsUsableLink(self:GetPortal1(), self:GetPortal2()) then return false end
@@ -210,7 +215,7 @@ if SERVER then
 				and SeamlessPortals.SameGeometry(pose.portals, SeamlessPortals.CaptureGeometry(portal1)) then return true end
 		end
 		self.SEAMLESS_PORTALS_FROZEN_POSE = nil
-		e1_phys:EnableMotion(motion)
+		if e1_phys:IsMotionEnabled() ~= motion then e1_phys:EnableMotion(motion) end
 
 		local e2_vel = e2_phys:GetVelocity()
 		local e2_angvel = e2_phys:GetAngleVelocity()
@@ -250,10 +255,14 @@ if SERVER then
 			return true
 		end
 
-		local e1_pos, e1_ang = SeamlessPortals.TransformPortal(portal2, portal1, e1_phys:GetPos(), e1_phys:GetAngles())
+		-- Linear velocity acts at the mass center, which may be far from the model origin.
+        local e1_center = e1_phys:LocalToWorld(e1_phys:GetMassCenter())
+        local e2_center = e2_phys:LocalToWorld(e2_phys:GetMassCenter())
+        local e1_pos, e1_ang = SeamlessPortals.TransformPortal(portal2, portal1, e1_center, e1_phys:GetAngles())
 
-		local pos_delta = (e2_phys:GetPos() - e1_pos)
-		local ang_delta = e2:WorldToLocalAngles(e1_ang)
+		local pos_delta = (e2_center - e1_pos)
+		local _, ang_delta = WorldToLocal(vector_origin, e1_ang, vector_origin, e2_phys:GetAngles())
+		ang_delta:Normalize()
 		ang_delta = Vector(ang_delta[3], ang_delta[1], ang_delta[2])
 
 		local bounding_diameter = e1:BoundingRadius() * 2
@@ -261,10 +270,32 @@ if SERVER then
 		local e2_percentage_through = 1 - e1_percentage_through
 
 		local e1_vel = transform_portal_local(portal2, portal1, e1_phys:GetVelocity())
-		local e1_angvel = e1_phys:GetAngleVelocity() -- already in local frame
+		local e1_world_angvel = SeamlessPortals.TransformDirection(portal2, portal1,
+            e1_phys:LocalToWorldVector(e1_phys:GetAngleVelocity()), false)
+        local e1_angvel = e2_phys:WorldToLocalVector(e1_world_angvel)
+        -- Resting contacts may differ within the collision margin. Do not turn
+        -- that small separation into a spring or repeatedly wake settled bodies.
+        local radius = math.max(e2:BoundingRadius(), 1)
+        local angular_scale = (radius * math.pi / 180) ^ 2
+        local linear_slop = 0.5
+        local angle_slop = math.min(3, 2 / (radius * math.pi / 180))
+        -- A narrow settling band avoids asymptotically correcting the slop boundary.
+        local coherent = pos_delta:LengthSqr() <= (linear_slop + 0.1) ^ 2
+            and ang_delta:LengthSqr() <= (angle_slop + 0.1) ^ 2
+        if coherent and e1_phys:IsAsleep() and e2_phys:IsAsleep() then return true end
+        local contacts = next(e1_phys:GetFrictionSnapshot()) and next(e2_phys:GetFrictionSnapshot())
+        local angular_limit = math.min(100, 25 / angular_scale)
+        if coherent and contacts and e1_vel:LengthSqr() <= 25 and e2_vel:LengthSqr() <= 25
+            and e1_angvel:LengthSqr() <= angular_limit and e2_angvel:LengthSqr() <= angular_limit then
+            return true
+        end
 		local vel_average = (e2_vel * e1_percentage_through + e1_vel * e2_percentage_through)
 		local angvel_average = (e2_angvel * e1_percentage_through + e1_angvel * e2_percentage_through)
 
+        if contacts then
+            pos_delta = coupling_excess(pos_delta, linear_slop)
+            ang_delta = coupling_excess(ang_delta, angle_slop)
+        end
 		local pos_delta_frametime = pos_delta / (FrameTime() * 2)
 		local e1_phys_vel = (vel_average + pos_delta_frametime * e1_percentage_through)
 		local e2_phys_vel = (vel_average - pos_delta_frametime * e2_percentage_through)
@@ -273,6 +304,8 @@ if SERVER then
 		local ang_delta_frametime = ang_delta / (FrameTime() * 2)
 		local e1_phys_angvel = (angvel_average - ang_delta_frametime * e1_percentage_through)
 		local e2_phys_angvel = (angvel_average + ang_delta_frametime * e2_percentage_through)
+        e1_phys_angvel = e1_phys:WorldToLocalVector(SeamlessPortals.TransformDirection(portal1, portal2,
+            e2_phys:LocalToWorldVector(e1_phys_angvel), false))
 
 		e1_phys:SetVelocity(e1_phys_vel)
 	    e1_phys:SetAngleVelocity(e1_phys_angvel)

@@ -531,6 +531,7 @@ assert(SP.MirrorPhysgunContext(p,NULL,true,e,0,Vector())==nil)
     test('F-T25', 'Tracer streaks keep muzzle ownership, speed and portal clipping', r'''
 SERVER=false;CLIENT=true
 function Material(name) return name end
+function CreateMaterial() return {SetInt=function() end} end
 function Color(r,g,b,a) return {r=r,g=g,b=b,a=a or 255} end
 local clock=0
 function CurTime() return clock end
