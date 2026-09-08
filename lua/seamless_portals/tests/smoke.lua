@@ -33,6 +33,9 @@ local paths = {
     "seamless_portals/crossing.lua",
     "seamless_portals/held_proxy.lua",
     "seamless_portals/melee.lua",
+    "seamless_portals/npc_awareness.lua",
+    "seamless_portals/npc_navigation.lua",
+    "seamless_portals/npc_transition.lua",
     "seamless_portals/projectiles.lua",
     "seamless_portals/rpg_guidance.lua",
     "seamless_portals/tracers.lua",
@@ -61,6 +64,8 @@ local server_only = {
     ["seamless_portals/carry.lua"] = true,
     ["seamless_portals/held_proxy.lua"] = true,
     ["seamless_portals/melee.lua"] = true,
+    ["seamless_portals/npc_awareness.lua"] = true,
+    ["seamless_portals/npc_navigation.lua"] = true,
     ["seamless_portals/projectiles.lua"] = true,
     ["seamless_portals/rpg_guidance.lua"] = true,
     ["autorun/server/sv_portals_pvs.lua"] = true,
@@ -94,5 +99,7 @@ if SERVER then
     for _,name in ipairs({"PlanTransport","CommitTransport","SnapshotDamage","CopyDamage","RelayBlast","RelayPortalMelee","TransferProjectile","UpdateRPGGuidance"}) do
         assert(isfunction(SP[name]),"Missing field API: "..name)
     end
+    assert(isfunction(SP.UpdateNPCNavigation) and isfunction(SP.TransferNPCThroughPortal)
+        and isfunction(SP.NPCPortalRoutePoints), "Missing NPC navigation API")
 end
 print("[Seamless Portals] Native GLua compile + pure smoke checks passed. Gameplay/rendering not tested.")

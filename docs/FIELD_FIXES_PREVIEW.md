@@ -2,6 +2,7 @@
 
 **Build:** `2026.09.08-field-rc3-preview`. **Status: PREVIEW — INCOMPLETE, NOT A VALIDATED RELEASE.**
 **Local follow-up:** See [Gameplay fixes and measured results, 2026-09-08](BUG_FIXES_2026-09-08.md). The package history and acceptance checklist below describe the original preview.
+The later [native NPC navigation adapter](NPC_NAVIGATION.md) extends the original attention-only F10 behavior; its acceptance status is recorded separately.
 
 
 This package applies the 11 previously delivered preliminary F00–F10 diffs to the complete RC2 source. Those diffs are unchanged. F11 adds packaging metadata/documentation only. The total series is **94 cumulative patches: 82 previous stages + 11 field-fix stages + 1 packaging stage**.

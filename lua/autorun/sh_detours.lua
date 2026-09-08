@@ -12,6 +12,8 @@ AddCSLuaFile("seamless_portals/bullet_emitter.lua")
 include("seamless_portals/bullet_emitter.lua")
 AddCSLuaFile("seamless_portals/bullets.lua")
 include("seamless_portals/bullets.lua")
+AddCSLuaFile("seamless_portals/npc_transition.lua")
+include("seamless_portals/npc_transition.lua")
 if SERVER then
     include("seamless_portals/melee.lua")
     include("seamless_portals/blasts.lua")

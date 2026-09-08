@@ -103,6 +103,12 @@ The server sends to the exit room’s PAS, not the virtual source position that 
 
 After an attempted native carry test, run `seamless_portals_transport_status` on the server (console/admin). It prints the last carry kind, a sampled native-hold state, physics-identity check and tick. It is diagnostic evidence, not an automatic fix or comprehensive pass/fail certification. Also available: `seamless_portals_dump_movement`, `seamless_portals_dump_sweeps`, `LastRenderStats`, `PVSStats[ply]`.
 
+## Native NPC navigation
+
+`seamless_portals_npc_navigation` (server, archived, default `1`) lets native ground NPCs consider walkable portal links when pursuing an enemy or an existing entity navigation goal. Both endpoints must allow `props`. `seamless_portals_npc_distance` also bounds the candidate route length. Awareness and ranged aiming retain their separate `seamless_portals_npc_awareness` setting.
+
+The NPC walks to the entrance using the map's native navigation, crosses only after hull and exit checks, then resumes its target. Increasing the portal's usable width adds crossing choices, up to nine points per link, constrained by the NPC's hull and the exit width. Supported links are approximately vertical and keep the NPC upright; flying NPCs, scripted NPCs and NextBots are excluded. See [NPC navigation](docs/NPC_NAVIGATION.md) for behavior, validation and remaining acceptance work.
+
 ## Sandbox tool lighting
 
 Sandbox Light and Lamp illumination passes through one linked aperture. `seamless_portals_tool_lights` is a client setting (default 4, range 0–4); zero disables these transmitted lights. The adapter retains color, range, lamp direction/texture and Light world/model switches, and masks the projected light to the aperture. It tracks up to 128 Sandbox sources and examines up to 64 portal endpoints per source. Lamp shadows share the engine's projected-texture shadow budget. Source occlusion uses a representative ray; partial occlusion and oblique near-plane clipping are approximations. This does not add light transmission for arbitrary addon lights or recursive portal chains.

@@ -10,6 +10,8 @@ SP.NPCAttention=SP.NPCAttention or setmetatable({},{__mode="k"})
 SP.NPCCandidates=SP.NPCCandidates or {}
 local records,npcs=SP.NPCAttention,SP.NPCCandidates
 local known=setmetatable({},{__mode="k"})
+-- Rebuild once on reload; retaining the old list duplicates scheduler work.
+for i=#npcs,1,-1 do npcs[i]=nil end
 local armed_classes={npc_combine_s=true,npc_metropolice=true,npc_citizen=true,npc_alyx=true,npc_barney=true}
 local function register(ent)
     if IsValid(ent) and ent:IsNPC() and ent:GetClass()~="npc_bullseye" and not known[ent] then
@@ -84,6 +86,7 @@ function SP.FindNPCTarget(npc,actors)
     end
 end
 function SP.UpdateNPCAttention(npc,actors)
+    if (SP.NPCNavigation and SP.NPCNavigation[npc]) or (SP.NPCPassages and SP.NPCPassages[npc]) then return end
     if not allowed(npc) then SP.ClearNPCAttention(npc) return end
     local c=SP.FindNPCTarget(npc,actors)
     if not c then SP.ClearNPCAttention(npc) return end
@@ -156,6 +159,7 @@ function SP.AdjustNPCPortalBullet(npc,data)
     data.Dir=(path.virtual-data.Src):GetNormalized()
     SP.CountField("npc_portal_shots")
 end
+include("seamless_portals/npc_navigation.lua")
 local next_update,cursor,target_cursor=0,0,0
 hook.Add("Think","seamless_portals_npc_awareness",function()
     for npc,r in pairs(records) do
@@ -179,7 +183,7 @@ hook.Add("Think","seamless_portals_npc_awareness",function()
         cursor=cursor % #npcs+1
         local npc=npcs[cursor]
         if not IsValid(npc) then table.remove(npcs,cursor) cursor=cursor-1 if #npcs==0 then break end
-        else SP.UpdateNPCAttention(npc,actors) end
+        elseif not SP.UpdateNPCNavigation(npc,players) then SP.UpdateNPCAttention(npc,actors) end
     end
 end)
 hook.Add("EntityTakeDamage","seamless_portals_attention_no_damage",function(ent)

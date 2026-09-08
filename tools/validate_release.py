@@ -18,6 +18,7 @@ def validate(root: Path, destination: Path) -> int:
     required = [
         "lua/seamless_portals/core.lua", "tools/check_source.py",
         "validation/regression_tests.py", "validation/integration_tests.py", "validation/custom_feature_tests.py", "validation/field_fix_tests.py",
+        "validation/npc_navigation_tests.py",
     ]
     missing = [name for name in required if not (root / name).is_file()]
     if missing:
@@ -38,9 +39,11 @@ def validate(root: Path, destination: Path) -> int:
                     "--output", str(destination / "custom-results.json")]),
         ("field", [str(root / "validation/field_fix_tests.py"), str(root),
                    "--output", str(destination / "field-results.json")]),
+        ("npc-navigation", [str(root / "validation/npc_navigation_tests.py"), str(root),
+                            "--output", str(destination / "npc-navigation-results.json")]),
     ]
     # Avoid mistaking a previous successful result for evidence from a failed run.
-    for filename in ("regression-results.json", "integration-results.json", "custom-results.json", "field-results.json"):
+    for filename in ("regression-results.json", "integration-results.json", "custom-results.json", "field-results.json", "npc-navigation-results.json"):
         (destination / filename).unlink(missing_ok=True)
     for name, arguments in commands:
         command = [sys.executable, *arguments]
@@ -70,7 +73,7 @@ def validate(root: Path, destination: Path) -> int:
         python_syntax.append({"file": path.relative_to(root).as_posix(),
                               "status": status, "error": error})
     reports = {}
-    for name in ("regression", "integration", "custom", "field"):
+    for name in ("regression", "integration", "custom", "field", "npc-navigation"):
         try:
             reports[name] = json.loads((destination / (name + "-results.json")).read_text())
         except (OSError, ValueError):
@@ -94,6 +97,7 @@ def validate(root: Path, destination: Path) -> int:
         "integration_checks_passed": reports["integration"]["passed"],
         "custom_checks_passed": reports["custom"]["passed"],
         "field_checks_passed": reports["field"]["passed"],
+        "npc_navigation_checks_passed": reports["npc-navigation"]["passed"],
         "normalized_lua_syntax_passed": sum(item["status"] == "PASS" for item in syntax),
         "normalized_lua_syntax_total": len(syntax),
         "python_syntax": python_syntax,
