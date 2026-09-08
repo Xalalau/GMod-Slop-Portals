@@ -56,6 +56,10 @@ local function draw_stenciled(self, texture, flip, nudge_z)
 	portal_size:Mul(nudge_z or 1)
 
 	local backface_disabled = self:GetDisableBackface()
+    local linked = SeamlessPortals.IsUsableLink(self,self:GetExitPortal())
+    -- A live no-back portal has no geometry when viewed from behind, even if
+    -- the view was rendered earlier in this frame or skipped by its budget.
+    if backface_disabled and linked and SeamlessPortals.PlaneDistance(self,EyePos()) < 0 then return end
 
 	render_matrix:Identity()
 	render_matrix:SetScale(portal_size)
@@ -67,7 +71,7 @@ local function draw_stenciled(self, texture, flip, nudge_z)
 
 	-- F07: Backface is a backing-slab option, not visibility of an unlinked
     -- aperture. Always show a front-plane outline while no view is available.
-    if backface_disabled and (not self.SEAMLESS_PORTALS_RENDERED or not SeamlessPortals.IsUsableLink(self,self:GetExitPortal())) then
+    if backface_disabled and not linked then
         local vertices=SeamlessPortals.ApertureVertices(self)
         local color=Color(80,210,255,255)
         for i,a in ipairs(vertices) do
@@ -85,7 +89,7 @@ local function draw_stenciled(self, texture, flip, nudge_z)
     end
 
     -- frame flat face
-	if SeamlessPortals.Rendering or !self.SEAMLESS_PORTALS_RENDERED then
+	if SeamlessPortals.Rendering or not linked or !self.SEAMLESS_PORTALS_RENDERED then
 		if !backface_disabled then
 			portal_size[3] = 0
 			render.CullMode(1)
