@@ -216,6 +216,7 @@ function SP.CommitTransport(plan)
             SafeRemoveEntity(item.clone)
         end
     end
+    if SP.PrepareGravityGunTransfer then SP.PrepareGravityGunTransfer(plan) end
     return true
 end
 function SP.NotifyTransport(plan,kind)

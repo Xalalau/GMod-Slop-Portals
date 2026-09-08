@@ -40,6 +40,14 @@ if SERVER then util.AddNetworkString(message) return end
 SP.TracerSegments={}
 local segments=SP.TracerSegments
 local material=Material("effects/spark")
+local gravityMaterial=CreateMaterial("seamless_portals_gravity_beam","UnlitGeneric",{
+    ["$basetexture"]="sprites/orangelight1",["$additive"]="1",
+    ["$vertexcolor"]="1",["$vertexalpha"]="1",["$nocull"]="1"
+})
+local gravityGlow=CreateMaterial("seamless_portals_gravity_glow","UnlitGeneric",{
+    ["$basetexture"]="sprites/orangecore2",["$additive"]="1",
+    ["$vertexcolor"]="1",["$vertexalpha"]="1"
+})
 local main_view
 local muzzle_cache=setmetatable({},{__mode="k"})
 local speeds={ar2tracer=8000,airboatguntracer=10000,airboatgunheavytracer=8000,helicoptertracer=8000}
@@ -84,6 +92,8 @@ function SP.BulletMuzzlePoint(start,weapon)
 end
 function SP.EmitBulletVisual(name,path,weapon)
     local kind=string.lower(name)
+    local gravity=kind=="seamless_gravitygun"
+    if gravity and SP.GravityGunPuntFeedback then SP.GravityGunPuntFeedback(weapon) end
     local pulse=string.find(kind,"ar2",1,true) or string.find(kind,"airboat",1,true)
     for i,segment in ipairs(path) do
         if #segments>=512 then return end
@@ -96,12 +106,23 @@ function SP.EmitBulletVisual(name,path,weapon)
                 local speed=speeds[kind] or 5000
                 segments[#segments+1]={start=Vector(start),finish=Vector(segment.finish),
                     direction=delta/length,length=length,speed=speed,created=CurTime(),
+                    gravity=gravity,last=gravity and i==#path,
                     width=pulse and 1.5 or 1,color=pulse and Color(160,210,255) or Color(255,220,150)}
+                if gravity and i==#path then
+                    local effect=EffectData()
+                    effect:SetOrigin(segment.finish) effect:SetNormal(-delta/length)
+                    effect:SetMagnitude(3) effect:SetScale(2) effect:SetRadius(16)
+                    util.Effect("Sparks",effect)
+                end
             end
         end
     end
 end
 function SP.SampleBulletTracer(segment,age)
+    if segment.gravity then
+        if age<0.15 then return segment.start,segment.finish end
+        return
+    end
     -- Clip both ends to this leg, including very short muzzle-to-portal paths.
     local head=math.min(segment.length,math.max(age,0)*segment.speed+96)
     local tail=math.max(0,math.max(age,0)*segment.speed)
@@ -110,20 +131,34 @@ function SP.SampleBulletTracer(segment,age)
 end
 hook.Add("PostDrawTranslucentRenderables","seamless_portals_segmented_tracers",function(depth,sky)
     if depth or sky then return end
-    render.SetMaterial(material)
     local now=CurTime()
     for _,segment in ipairs(segments) do
         -- A sub-frame leg must get one visible frame even at a low frame rate.
         segment.born=segment.born or now
         local start,finish=SP.SampleBulletTracer(segment,now-segment.born)
-        if start and finish then render.DrawBeam(start,finish,segment.width,0,1,segment.color) end
+        if start and finish then
+            if segment.gravity then
+                local fade=1-math.Clamp((now-segment.born)/0.15,0,1)
+                gravityMaterial:SetInt("$frame",math.floor((now-segment.born)*30))
+                render.SetMaterial(gravityMaterial)
+                render.DrawBeam(start,finish,12*fade,0,1,Color(255,255,255,255*fade))
+                if segment.last then
+                    render.SetMaterial(gravityGlow)
+                    render.DrawSprite(finish,64*fade,64*fade,Color(255,255,255,255*fade))
+                end
+            else
+                render.SetMaterial(material)
+                render.DrawBeam(start,finish,segment.width,0,1,segment.color)
+            end
+        end
     end
 end)
 hook.Add("Think","seamless_portals_tracer_expiry",function()
     local now=CurTime()
     for i=#segments,1,-1 do
         local segment=segments[i]
-        if now-(segment.born or segment.created)>math.max(0.1,segment.length/segment.speed) then table.remove(segments,i) end
+        local life=segment.gravity and 0.15 or math.max(0.1,segment.length/segment.speed)
+        if now-(segment.born or segment.created)>life then table.remove(segments,i) end
     end
 end)
 net.Receive(message,function()

@@ -49,6 +49,8 @@ function SP.ClampHeldProxy(clone,child,entry,exit,position,angle)
     local center=(lo+hi)*0.5
     local previous=clone.SEAMLESS_PORTALS_PROXY_LAST
     local delta=previous and position-previous.position or vector_origin
+    -- A growing emerged hull can begin its sweep behind the exit wall. Recheck
+    -- the remaining sweep after it leaves that initial overlap.
     local tr=SP.TraceHeldProxyMovement({start=center-delta,endpos=center,mins=lo-center,maxs=hi-center,mask=MASK_SOLID,
         filter=function(ent)
             if ent==clone or ent==entry or ent==exit or ent==record.player then return false end
@@ -57,7 +59,7 @@ function SP.ClampHeldProxy(clone,child,entry,exit,position,angle)
                 if ent==member or ent==member.SEAMLESS_PORTALS_CLONE then return false end
             end
             return true
-        end},record.nativePickup~=nil)
+        end},record.nativePickup~=nil or record.kind=="gravgun")
     if tr.StartSolid or tr.AllSolid or tr.Hit then
         SP.CountField("carry_remote_collision_blocks")
         local corrected

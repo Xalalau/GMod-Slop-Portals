@@ -20,7 +20,8 @@ def validate(root: Path, destination: Path) -> int:
         "validation/regression_tests.py", "validation/integration_tests.py", "validation/custom_feature_tests.py", "validation/field_fix_tests.py",
         "validation/npc_navigation_tests.py",
         "validation/rpg_aim_tests.py",
-        "validation/physgun_pickup_tests.py",
+        "validation/remote_pickup_tests.py",
+        "validation/gravitygun_tests.py",
         "validation/properties_tests.py",
     ]
     missing = [name for name in required if not (root / name).is_file()]
@@ -46,13 +47,15 @@ def validate(root: Path, destination: Path) -> int:
                             "--output", str(destination / "npc-navigation-results.json")]),
         ("rpg-aim", [str(root / "validation/rpg_aim_tests.py"), str(root),
                      "--output", str(destination / "rpg-aim-results.json")]),
-        ("physgun-pickup", [str(root / "validation/physgun_pickup_tests.py"), str(root),
+        ("physgun-pickup", [str(root / "validation/remote_pickup_tests.py"), str(root),
                             "--output", str(destination / "physgun-pickup-results.json")]),
+        ("gravitygun", [str(root / "validation/gravitygun_tests.py"), str(root),
+                        "--output", str(destination / "gravitygun-results.json")]),
         ("properties", [str(root / "validation/properties_tests.py"), str(root),
                         "--output", str(destination / "properties-results.json")]),
     ]
     # Avoid mistaking a previous successful result for evidence from a failed run.
-    for filename in ("regression-results.json", "integration-results.json", "custom-results.json", "field-results.json", "npc-navigation-results.json", "physgun-pickup-results.json", "rpg-aim-results.json", "properties-results.json"):
+    for filename in ("regression-results.json", "integration-results.json", "custom-results.json", "field-results.json", "npc-navigation-results.json", "physgun-pickup-results.json", "rpg-aim-results.json", "gravitygun-results.json", "properties-results.json"):
         (destination / filename).unlink(missing_ok=True)
     for name, arguments in commands:
         command = [sys.executable, *arguments]
@@ -82,7 +85,7 @@ def validate(root: Path, destination: Path) -> int:
         python_syntax.append({"file": path.relative_to(root).as_posix(),
                               "status": status, "error": error})
     reports = {}
-    for name in ("regression", "integration", "custom", "field", "npc-navigation", "physgun-pickup", "rpg-aim", "properties"):
+    for name in ("regression", "integration", "custom", "field", "npc-navigation", "physgun-pickup", "rpg-aim", "gravitygun", "properties"):
         try:
             reports[name] = json.loads((destination / (name + "-results.json")).read_text())
         except (OSError, ValueError):
@@ -108,7 +111,8 @@ def validate(root: Path, destination: Path) -> int:
         "field_checks_passed": reports["field"]["passed"],
         "npc_navigation_checks_passed": reports["npc-navigation"]["passed"],
         "rpg_aim_checks_passed": reports["rpg-aim"]["passed"],
-        "physgun_pickup_checks_passed": reports["physgun-pickup"]["passed"],
+        "remote_pickup_checks_passed": reports["physgun-pickup"]["passed"],
+        "gravitygun_checks_passed": reports["gravitygun"]["passed"],
         "properties_checks_passed": reports["properties"]["passed"],
         "normalized_lua_syntax_passed": sum(item["status"] == "PASS" for item in syntax),
         "normalized_lua_syntax_total": len(syntax),

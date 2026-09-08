@@ -10,7 +10,7 @@ from lua_support import Lua, normalize
 def main(root, output):
     here = Path(__file__).resolve().parent
     base = (here / "stubs.lua").read_text() + (here / "custom_stubs.lua").read_text()
-    for name in ("core", "aperture", "crossing", "holding", "physgun_pickup"):
+    for name in ("core", "aperture", "crossing", "holding", "remote_pickup"):
         base += "\ndo\n" + normalize((root / f"lua/seamless_portals/{name}.lua").read_text()) + "\nend\n"
     base += """
 IN_ATTACK,IN_WALK,IN_SPEED=1,262144,131072
@@ -355,6 +355,72 @@ SeamlessPortals.NativePickupTargets[e]={}
 assert(hook.Run('PhysgunPickup',p,e)==false)
 assert(hook.Run('AllowPlayerPickup',p,e)==false)
 assert(hook.Run('GravGunPickupAllowed',p,e)==false)
+"""),
+        ("gravity-handle-permission", "Remote gravity pickup checks the real target and rejects a second controller", """
+local SP=SeamlessPortals
+local handle,other=prop(),player()
+local state={ply=p,plan={root=e},kind='gravgun'}
+handle.SEAMLESS_PORTALS_NATIVE_PICKUP=state
+SP.NativePickupTargets[e]=state
+local raw=hook.Run
+local veto=false
+hook.Run=function(event,ply,ent)
+ local result=raw(event,ply,ent)
+ if result~=nil then return result end
+ assert(event=='GravGunPickupAllowed' and ent==e)
+ return not veto
+end
+assert(hook.Run('GravGunPickupAllowed',p,handle)==true)
+veto=true;assert(hook.Run('GravGunPickupAllowed',p,handle)==false)
+veto=false;assert(hook.Run('GravGunPickupAllowed',other,handle)==false)
+assert(hook.Run('GravGunPickupAllowed',p,e)==false)
+assert(hook.Run('AllowPlayerPickup',p,handle)==false)
+assert(not SP.GetHeldRecord(p))
+state.confirmed=true;assert(hook.Run('GravGunPickupAllowed',p,handle)==false)
+"""),
+        ("gravity-native-controller", "A confirmed gravity hold tracks the real prop until its native handle releases", """
+local SP=SeamlessPortals
+local handle,link=prop(),prop()
+local original=e:GetPhysicsObject()
+local state={ply=p,plan={root=e},handle=handle,weld=link,kind='gravgun',confirmed=true}
+handle.SEAMLESS_PORTALS_NATIVE_PICKUP=state;handle.holding=true
+hook.Run('GravGunOnPickedUp',p,handle)
+local record=SP.GetHeldRecord(p)
+assert(record.kind=='gravgun' and record.entity==e and record.controllerEntity==handle)
+record.group={e,handle};record.nativePickup=state;state.record=record
+SP.NativePickupStates[handle]=state;SP.NativePickupTargets[e]=state
+TICK=TICK+5;assert(SP.GetHeldRecord(p)==record)
+SP.ClearCarryState=function(r) assert(r==record);r.group=nil end
+hook.Run('GravGunOnDropped',p,handle);handle.holding=false;hook.Run('Think')
+assert(not SP.GetHeldRecord(p) and not IsValid(handle) and not IsValid(link))
+assert(IsValid(e) and e:GetPhysicsObject()==original)
+assert(not SP.NativePickupTargets[e])
+"""),
+        ("gravity-carry-physics", "Remote gravity carry stiffens the original body and restores its physics on native release", """
+local SP=SeamlessPortals
+local body=e:GetPhysicsObject()
+local mass,linear,angular,drag=8,.25,.8,true
+function body:GetMass() return mass end
+function body:SetMass(v) mass=v end
+function body:GetDamping() return linear,angular end
+function body:SetDamping(l,a) linear,angular=l,a end
+function body:IsDragEnabled() return drag end
+function body:EnableDrag(v) drag=v end
+local handle=prop()
+local state={kind='gravgun',plan={root=e},phys=body}
+handle.SEAMLESS_PORTALS_NATIVE_PICKUP=state
+SP.SetNativeGravityCarry(state,true)
+assert(mass==1 and linear==.25 and angular==10 and not drag)
+SP.SetNativeGravityCarry(state,true)
+assert(e:GetPhysicsObject()==body and #state.gravityBodies==1)
+linear=.5
+hook.Run('GravGunOnDropped',p,handle)
+assert(mass==8 and linear==.5 and angular==.8 and drag)
+assert(not state.gravityBodies and e:GetPhysicsObject()==body)
+SP.SetNativeGravityCarry(state,false)
+assert(mass==8 and angular==.8)
+state.kind='physgun';SP.SetNativeGravityCarry(state,true)
+assert(mass==8 and angular==.8 and not state.gravityBodies)
 """),
         ("offset-size-admission", "Initial pickup checks size without requiring the remote prop to be centered", """
 local points={}

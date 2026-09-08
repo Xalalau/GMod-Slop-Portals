@@ -1,12 +1,12 @@
--- Start a native physgun hold through a temporary selection handle.
+-- Start a native physics-weapon hold through a temporary selection handle.
 -- Only the owned helper and its constraint are created; original PhysObjs and constraints survive.
 if not SERVER then return end
 local SP=SeamlessPortals
 local permissionPlayers=setmetatable({},{__mode="k"})
-function SP.CheckNativePickupPermission(ply,root)
+function SP.CheckNativePickupPermission(ply,root,kind)
     local previous=permissionPlayers[root]
     permissionPlayers[root]=ply
-    local ok,result=xpcall(function() return hook.Run("PhysgunPickup",ply,root) end,debug.traceback)
+    local ok,result=xpcall(function() return hook.Run(kind=="gravgun" and "GravGunPickupAllowed" or "PhysgunPickup",ply,root) end,debug.traceback)
     permissionPlayers[root]=previous
     if not ok then ErrorNoHalt(tostring(result).."\n") return false end
     return result==true
@@ -32,10 +32,31 @@ function SP.RemotePhysgunGroupFits(portal,points)
     end
     return true
 end
-local function pickup_plan(ply)
+local function gravity_target(ply,root)
+    if root:IsNPC() or root:GetMoveType()~=MOVETYPE_VPHYSICS
+        or root:IsEFlagSet(EFL_NO_PHYSCANNON_INTERACTION) or root==ply:GetGroundEntity() then return false end
+    local count,mass=root:GetPhysicsObjectCount(),0
+    if count<1 or count>32 then return false end
+    for i=0,count-1 do
+        local body=root:GetPhysicsObjectNum(i)
+        if not IsValid(body) or not body:IsMotionEnabled() or body:HasGameFlag(FVPHYSICS_NO_PLAYER_PICKUP)
+            or body:HasGameFlag(FVPHYSICS_PLAYER_HELD) then return false end
+        local weight=body:GetMass()
+        if not SP.IsFinite(weight) or weight<=0 then return false end
+        mass=mass+weight
+    end
+    local cv=GetConVar("physcannon_maxmass")
+    return SP.IsFinite(mass) and mass<=(cv and cv:GetFloat() or 250)
+end
+local function pickup_plan(ply,kind)
     if not SP.TracePortalLine then return end
     local start=ply:EyePos()
-    local tr=SP.TracePortalLine({start=start,endpos=start+ply:GetAimVector()*reach(),filter=ply,
+    local range=reach()
+    if kind=="gravgun" then
+        local cv=GetConVar("physcannon_tracelength")
+        range=math.Clamp(cv and cv:GetFloat() or 250,0,4096)
+    end
+    local tr=SP.TracePortalLine({start=start,endpos=start+ply:GetAimVector()*range,filter=ply,
         mask=MASK_SHOT,SeamlessMaxHops=1,SeamlessFeature="props"})
     local segments=tr.SeamlessSegments
     local root,hit=tr.Entity,tr.HitPos
@@ -64,10 +85,12 @@ local function pickup_plan(ply)
     if root:IsNPC() and root:GetPhysicsObjectCount()==1 then bone=0 end
     local phys=root:GetPhysicsObjectNum(bone)
     if not IsValid(phys) or phys:HasGameFlag(FVPHYSICS_PLAYER_HELD) then return end
+    if kind=="gravgun" and (localNPC or not gravity_target(ply,root)) then return end
     -- Run the actual target through Sandbox/CPPI and addon pickup permissions.
-    if not SP.CheckNativePickupPermission(ply,root) then return end
+    if not SP.CheckNativePickupPermission(ply,root,kind) then return end
     if SP.GetHeldRecord(ply) or not SP.IsLiveEntity(root) or root:GetPhysicsObjectNum(bone)~=phys or root:IsPlayerHolding()
         or (not localNPC and (not SP.SupportsPropTraversal(entry,exit) or exit:GetExitPortal()~=entry)) then return end
+    if kind=="gravgun" and not gravity_target(ply,root) then return end
     local group=SP.CollectTransportGroup(root,ply)
     if not group or #group>=64 then return end
     local anchor=root:GetPos()
@@ -120,8 +143,51 @@ end
 SP.NativePickupStates=SP.NativePickupStates or {}
 SP.NativePickupTargets=SP.NativePickupTargets or setmetatable({},{__mode='k'})
 SP.NativePickupNext=SP.NativePickupNext or setmetatable({},{__mode='k'})
+function SP.SetNativeGravityCarry(state,enabled)
+ if state.kind~='gravgun' then return end
+ if not enabled then
+  -- The engine restores its own handle during native detach.
+  state.gravityHandle=nil
+  for _,saved in ipairs(state.gravityBodies or {}) do
+   local body=saved.body
+   if IsValid(body) then
+    body:SetMass(saved.mass)
+    local linear=body:GetDamping()
+    body:SetDamping(linear,saved.angular)
+    body:EnableDrag(saved.drag)
+   end
+  end
+  state.gravityBodies=nil
+  return
+ end
+ if not state.gravityHandle and IsValid(state.handle) then
+  local body=state.handle:GetPhysicsObject()
+  if IsValid(body) then
+   state.gravityHandle=body
+   -- Let the native controller dominate the extra welded body's inertia.
+   body:SetMass(16)
+  end
+ end
+ if state.gravityBodies or not SP.IsLiveEntity(state.plan.root) then return end
+ local root=state.plan.root
+ local count=root:GetPhysicsObjectCount()
+ local factor=math.max(count/7.5,1)
+ state.gravityBodies={}
+ for i=0,count-1 do
+  local body=root:GetPhysicsObjectNum(i)
+  if IsValid(body) then
+   local linear,angular=body:GetDamping()
+   state.gravityBodies[#state.gravityBodies+1]={body=body,mass=body:GetMass(),angular=angular,drag=body:IsDragEnabled()}
+   -- Match the native grab controller on the real body welded to its handle.
+   body:SetMass(body==state.phys and 1 or 1/factor)
+   body:SetDamping(linear,10)
+   if body==state.phys then body:EnableDrag(false) end
+  end
+ end
+end
 local function remove_state(state,rollback)
  if state.removed then return end state.removed=true
+ SP.SetNativeGravityCarry(state,false)
  if rollback and state.record then
   for _,ent in ipairs(state.record.group or {}) do
    local clone=IsValid(ent) and ent.SEAMLESS_PORTALS_CLONE
@@ -217,12 +283,13 @@ local function pickup_mesh(phys)
  end
  return mesh
 end
-local function begin(ply)
- local plan,group,phys,grab,bone=pickup_plan(ply)
+local function begin(ply,kind)
+ kind=kind or 'physgun'
+ local plan,group,phys,grab,bone=pickup_plan(ply,kind)
  if not plan then return end
  local mesh=pickup_mesh(phys)
  if not mesh then return end
- local state={ply=ply,plan=plan,phys=phys,group=group,bone=bone}
+ local state={ply=ply,plan=plan,phys=phys,group=group,bone=bone,kind=kind}
  local ok,err=xpcall(function()
   if plan.root:IsNPC() and plan.root:GetMoveType()~=MOVETYPE_VPHYSICS then
    state.npcMoveType=plan.root:GetMoveType()
@@ -246,12 +313,12 @@ local function begin(ply)
   handle:SetNoDraw(true) handle.DisableDuplicator=true
   handle:SetName('seamless_portals_native_physgun_handle')
   handle.SEAMLESS_PORTALS_NATIVE_PICKUP=state
-  handle:GetPhysicsObject():SetMass(phys:GetMass()) handle:GetPhysicsObject():EnableMotion(false)
+  handle:GetPhysicsObject():SetMass(phys:GetMass()) handle:GetPhysicsObject():EnableMotion(kind=='gravgun')
   local weld=state.npcMoveType and constraint.NoCollide(handle,plan.root,0,bone) or constraint.Weld(handle,plan.root,0,bone,0,true,false)
   if not IsValid(weld) then error('native pickup weld failed') end
   state.weld=weld weld.DisableDuplicator=true
   group[#group+1]=handle
-  local record={entity=plan.root,controllerEntity=handle,kind='physgun',player=ply,group=group,
+  local record={entity=plan.root,controllerEntity=handle,kind=kind,player=ply,group=group,
    crossed=not plan.localNPC,nativePickup=state}
   state.record=record
   if not plan.localNPC and not SP.StartCarryCorridor(ply,record,plan.exit,group) then error('native pickup corridor failed') end
@@ -259,7 +326,9 @@ local function begin(ply)
   state.flags=handle:GetSolidFlags() state.lo,state.hi=handle:GetCollisionBounds()
   local lo,hi=handle:WorldToLocal(plan.tracePoint)-Vector(2,2,2),handle:WorldToLocal(plan.tracePoint)+Vector(2,2,2)
   for i=1,3 do lo[i]=math.min(lo[i],state.lo[i]);hi[i]=math.max(hi[i],state.hi[i]) end
-  handle:SetCollisionBounds(lo,hi)
+  -- The gravity gun stores WorldSpaceCenter as its grip. Keep that center
+  -- unchanged while the surrounding bounds expose the selection ray.
+  if kind~='gravgun' then handle:SetCollisionBounds(lo,hi) end
   local d=plan.tracePoint-handle:GetPos()
   handle:SetSurroundingBounds(d-Vector(4,4,4),d+Vector(4,4,4))
   handle:EnableCustomCollisions()
@@ -274,16 +343,20 @@ local function begin(ply)
  end,debug.traceback)
  if not ok then remove_state(state,true) ErrorNoHalt(tostring(err)..'\n') end
 end
-hook.Add('PlayerPostThink','seamless_portals_native_physgun_pickup',function(ply)
- if not ply:Alive() or SP.GetHeldRecord(ply) or not ply:KeyDown(IN_ATTACK) or SP.WantsPortalPhysgun(ply) then return end
+hook.Add('PlayerPostThink','seamless_portals_native_remote_pickup',function(ply)
+ if not ply:Alive() or SP.GetHeldRecord(ply) then return end
  local weapon=ply:GetActiveWeapon()
- if not IsValid(weapon) or weapon:GetClass()~='weapon_physgun' then return end
+ if not IsValid(weapon) then return end
+ local kind=weapon:GetClass()=='weapon_physcannon' and 'gravgun' or 'physgun'
+ if kind=='gravgun' then
+  if not ply:KeyDown(IN_ATTACK2) or ply:KeyDown(IN_ATTACK) then return end
+ elseif weapon:GetClass()~='weapon_physgun' or not ply:KeyDown(IN_ATTACK) or SP.WantsPortalPhysgun(ply) then return end
  for _,state in pairs(SP.NativePickupStates) do if state.ply==ply then return end end
  if (SP.NativePickupNext[ply] or 0)>CurTime() then return end
  SP.NativePickupNext[ply]=CurTime()+0.1
- begin(ply)
+ begin(ply,kind)
 end)
-hook.Add('PhysgunPickup','seamless_portals_native_physgun_pickup',function(ply,ent)
+hook.Add('PhysgunPickup','seamless_portals_native_remote_pickup',function(ply,ent)
  local owner=SP.NativePickupTargets[ent]
  if owner and owner.permissionPlayer~=ply then return false end
  local state=ent.SEAMLESS_PORTALS_NATIVE_PICKUP
@@ -302,18 +375,30 @@ hook.Add('PhysgunPickup','seamless_portals_native_physgun_pickup',function(ply,e
  if not ok then ErrorNoHalt(tostring(result)..'\n') return false end
  return result==true
 end)
-for _,event in ipairs({'AllowPlayerPickup','GravGunPickupAllowed'}) do
- hook.Add(event,'seamless_portals_native_physgun_pickup',function(ply,ent)
-  if SP.NativePickupTargets[ent] or ent.SEAMLESS_PORTALS_NATIVE_PICKUP then return false end
- end)
-end
-hook.Add('OnPhysgunPickup','seamless_portals_native_physgun_pickup',function(ply,ent)
+hook.Add('AllowPlayerPickup','seamless_portals_native_remote_pickup',function(_,ent)
+ if SP.NativePickupTargets[ent] or ent.SEAMLESS_PORTALS_NATIVE_PICKUP then return false end
+end)
+hook.Add('GravGunPickupAllowed','seamless_portals_native_remote_pickup',function(ply,ent)
+ ---@cast ent any
+ local owner=SP.NativePickupTargets[ent]
+ if owner and permissionPlayers[ent]~=ply then return false end
+ local state=ent.SEAMLESS_PORTALS_NATIVE_PICKUP
+ if not state then return end
+ if state.kind~='gravgun' or state.ply~=ply or state.confirmed then return false end
+ return SP.CheckNativePickupPermission(ply,state.plan.root,'gravgun')
+end)
+hook.Add('OnPhysgunPickup','seamless_portals_native_remote_pickup',function(ply,ent)
  local state=ent.SEAMLESS_PORTALS_NATIVE_PICKUP
  if state and state.ply==ply then state.phys:EnableMotion(true) end
 end)
-hook.Add('Think','seamless_portals_native_physgun_pickup',function()
+hook.Add('GravGunOnDropped','seamless_portals_native_remote_pickup',function(_,ent)
+ local state=ent.SEAMLESS_PORTALS_NATIVE_PICKUP
+ if state then SP.SetNativeGravityCarry(state,false) end
+end)
+hook.Add('Think','seamless_portals_native_remote_pickup',function()
  for _,state in pairs(SP.NativePickupStates) do
   local handle=state.handle
+  if state.confirmed then SP.SetNativeGravityCarry(state,IsValid(handle) and handle:IsPlayerHolding()) end
   if state.confirmed and state.npcMoveType and SP.IsLiveEntity(state.plan.root)
    and IsValid(handle) and handle:IsPlayerHolding() then
    -- NPCs use a movement hull, not a dynamic VPhysics body. Follow the native
@@ -332,16 +417,19 @@ hook.Add('Think','seamless_portals_native_physgun_pickup',function()
    if IsValid(handle) and handle:IsPlayerHolding() and actual and actual.controllerEntity==handle and actual.entity==state.plan.root then
     for _,key in ipairs({'player','entry','exit','group','safe','crossed','contact','nativePickup'}) do actual[key]=state.record[key] end
     state.record=actual state.confirmed=true
+    SP.SetNativeGravityCarry(state,true)
     for _,ent in ipairs(state.group) do ent.SEAMLESS_PORTALS_CARRY=actual end
     handle.SEAMLESS_PORTALS_CARRY=actual
-    state.ply:SetNWEntity('seamless_portals_native_physgun_handle',handle)
-    state.ply:SetNWVector('seamless_portals_physgun_grab',state.grab)
-    state.ply:SetNWInt('seamless_portals_physgun_bone',state.bone)
+    if state.kind~='gravgun' then
+     state.ply:SetNWEntity('seamless_portals_native_physgun_handle',handle)
+     state.ply:SetNWVector('seamless_portals_physgun_grab',state.grab)
+     state.ply:SetNWInt('seamless_portals_physgun_bone',state.bone)
+    end
    else remove_state(state,true) end
   elseif SP.Holds[state.ply]~=state.record and not state.record.entry then remove_state(state,false) end
  end
 end)
-hook.Add('OnPhysgunFreeze','seamless_portals_native_physgun_pickup',function(weapon,phys,ent,ply)
+hook.Add('OnPhysgunFreeze','seamless_portals_native_remote_pickup',function(weapon,phys,ent,ply)
  local state=ent.SEAMLESS_PORTALS_NATIVE_PICKUP
  if not state then return end
  if not SP.IsLiveEntity(state.plan.root) or not IsValid(state.phys) then return false end

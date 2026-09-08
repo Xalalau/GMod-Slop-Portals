@@ -76,6 +76,7 @@ if SERVER then
     end)
     hook.Add("EntityEmitSound", "seamless_portals_detour_sound", function(event)
         if SP.SuppressPortalMeleeSound and SP.SuppressPortalMeleeSound(event) then return false end
+        if SP.SuppressPortalGravitySound and SP.SuppressPortalGravitySound(event) then return false end
         local t=SP.NormalizeSoundEvent(event)
         if SP.IsNativeFireLoop and SP.IsNativeFireLoop(t) then return end
         if not t or not permitted(t) then return end
@@ -190,6 +191,7 @@ net.Receive(message,function()
 end)
 hook.Add("EntityEmitSound","seamless_portals_detour_sound",function(event)
     if SP.SuppressPortalMeleeSound and SP.SuppressPortalMeleeSound(event) then return false end
+    if SP.SuppressPortalGravitySound and SP.SuppressPortalGravitySound(event) then return false end
     local t=SP.NormalizeSoundEvent(event)
     if SP.IsNativeFireLoop and SP.IsNativeFireLoop(t) then return end
     if not t or not enabled:GetBool() or not permitted(t) then return end
