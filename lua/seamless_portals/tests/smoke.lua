@@ -14,6 +14,7 @@ local paths = {
     "ai_tools/sh_world_capture.lua",
     "autorun/client/cl_render_core.lua",
     "autorun/client/cl_seamless_effects.lua",
+    "autorun/client/cl_seamless_rpg.lua",
     "autorun/client/cl_seamless_mirror_physgun.lua",
     "autorun/server/sv_portals_pvs.lua",
     "autorun/sh_detours.lua",

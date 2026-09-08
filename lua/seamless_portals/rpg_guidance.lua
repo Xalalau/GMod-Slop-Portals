@@ -4,6 +4,11 @@ if not SERVER then return end
 local SP=SeamlessPortals
 SP.RPGGuidance=SP.RPGGuidance or setmetatable({},{__mode="k"})
 local records=SP.RPGGuidance
+-- Retire the old visual helper when this module is hotloaded.
+for _,record in pairs(records) do
+    SafeRemoveEntity(record.laser)
+    record.laser=nil
+end
 SP.RPGLaserDots=SP.RPGLaserDots or setmetatable({},{__mode="k"})
 local dots=SP.RPGLaserDots
 local function register(ent)
@@ -31,6 +36,7 @@ function SP.ClearRPGGuidance(missile)
             dot:SetOwner(IsValid(record.owner) and record.owner or NULL)
         end
         dot:SetNoDraw(record.old_nodraw)
+        dot:SetNWEntity("seamless_portals_rpg_owner",NULL)
         dot.SEAMLESS_PORTALS_RPG_RECORD=nil
     end
     records[missile]=nil
@@ -85,20 +91,6 @@ function SP.UpdateRPGGuidance(missile,record)
         record.target=target
         missile:DeleteOnRemove(target)
     end
-    if not IsValid(record.laser) then
-        local laser=ents.Create("env_sprite")
-        if not IsValid(laser) then SP.ClearRPGGuidance(missile) return false end
-        laser.SEAMLESS_PORTALS_GUIDANCE_DOT=true
-        laser.SEAMLESS_PORTALS_AI_PROXY=true
-        laser:SetKeyValue("model","sprites/redglow1.vmt")
-        laser:SetKeyValue("rendermode",tostring(RENDERMODE_GLOW))
-        laser:SetKeyValue("renderamt","255")
-        laser:SetKeyValue("scale","0.5")
-        laser:SetPos(segment.HitPos) laser:Spawn()
-        laser:SetMoveType(MOVETYPE_NONE) laser:SetNotSolid(true)
-        record.laser=laser
-        missile:DeleteOnRemove(laser)
-    end
     if dot.SEAMLESS_PORTALS_RPG_RECORD~=record then
         record.old_nodraw=dot:GetNoDraw()
         record.owner=owner
@@ -108,8 +100,9 @@ function SP.UpdateRPGGuidance(missile,record)
     record.target:SetPos(segment.HitPos)
     -- The native dot stays under weapon control, but no longer competes for
     -- this player's missile. Restore its owner and visibility on every exit.
-    dot:SetOwner(record.target) dot:SetNoDraw(true)
-    record.laser:SetPos(segment.HitPos)
+    -- Keep the native dot networked for the client aim renderer.
+    dot:SetOwner(record.target) dot:SetNoDraw(record.old_nodraw)
+    dot:SetNWEntity("seamless_portals_rpg_owner",owner)
     if record.steered_tick~=engine.TickCount() then
         local velocity=missile:GetVelocity()
         local speed=velocity:Length()

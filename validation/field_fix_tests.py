@@ -55,6 +55,8 @@ function prop(...)
  function e:TakeDamageInfo(d) self.damage=(self.damage or 0)+d:GetDamage() end
  function e:DeleteOnRemove() end
  function e:GetNoDraw() return self.nodraw or false end
+ function e:SetNWEntity(key,value) self.nwentities=self.nwentities or {};self.nwentities[key]=value end
+ function e:GetNWEntity(key) return self.nwentities and self.nwentities[key] or NULL end
  function e:SetOwner(owner) self.owner=owner end
  function e:SetKeyValue() end
  function e:SetMoveType() end
@@ -395,16 +397,19 @@ function dot:SetSaveValue(k,v) self.values[k]=v;return true end
 hook.Run('OnEntityCreated',dot)
 local missile=prop();missile.owner=p
 function missile:GetClass() return 'rpg_missile' end
-ents.Create=function(class) assert(class=='info_target' or class=='env_sprite');local e=prop();e.values={};function e:Spawn() end;function e:SetSaveValue(k,v) self.values[k]=v end;return e end
+ents.Create=function(class) assert(class=='info_target', 'guidance must not create a second aim sprite');local e=prop();e.values={};function e:Spawn() end;function e:SetSaveValue(k,v) self.values[k]=v end;return e end
 local endpoint=Vector(210,10,20)
 SP.TracePortalLine=function() return {SeamlessSegments={{Entity=a},{HitPos=endpoint,StartPos=Vector(200,0,.05)}}} end
 hook.Run('SeamlessPortalsProjectileTransferred',missile,a,b)
 local record=SP.RPGGuidance[missile]
 '''
     test('F-T15', 'RPG uses the real owner laser when the weapon handle is unavailable', rpg_fixture + r'''
-assert(SP.UpdateRPGGuidance(missile,record));nearvec(record.laser:GetPos(),endpoint)
+assert(SP.UpdateRPGGuidance(missile,record));nearvec(record.target:GetPos(),endpoint)
+assert(not IsValid(record.laser) and not dot:GetNoDraw(), "only the client aim renderer draws the guidance point")
+assert(dot:GetNWEntity("seamless_portals_rpg_owner")==p)
 assert(missile:GetOwner()==p and dot:GetOwner()==record.target)
 SP.ClearRPGGuidance(missile);assert(not SP.RPGGuidance[missile])
+assert(dot:GetNWEntity("seamless_portals_rpg_owner")==NULL)
 assert(dot:GetOwner()==p and not dot:GetNoDraw() and not IsValid(record.target) and not IsValid(record.laser))
 ''', modules['rpg_guidance'])
     test('F-T17', 'RPG cleanup restores the original laser after its helper is removed first', rpg_fixture + r'''

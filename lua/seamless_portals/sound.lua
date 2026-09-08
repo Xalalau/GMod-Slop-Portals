@@ -53,13 +53,37 @@ function SP.SoundPaths(t)
     return paths
 end
 local message = "SEAMLESS_PORTALS_SPATIAL_SOUND_V2"
+local rpg_stop_message = "SEAMLESS_PORTALS_RPG_SOUND_STOP"
+local function rpg_flight_sound(name)
+    name = string.lower(name or "")
+    return name == "weapons/rpg/rocket1.wav" or name == "missile.ignite" or name == "missile.accelerate"
+end
 if SERVER then
     util.AddNetworkString(message)
+    util.AddNetworkString(rpg_stop_message)
+    SP.RPGSoundSources = SP.RPGSoundSources or {}
+    local rpg_sources = SP.RPGSoundSources
+    local function stop_rpg_sound(ent)
+        local index = rpg_sources[ent]
+        if not index then return end
+        rpg_sources[ent] = nil
+        -- The original missile may never have entered a listener's PVS.
+        net.Start(rpg_stop_message) net.WriteUInt(index,16) net.Broadcast()
+    end
+    hook.Add("EntityRemoved", "seamless_portals_rpg_sound", stop_rpg_sound)
+    hook.Add("PostCleanupMap", "seamless_portals_rpg_sound", function()
+        for ent in pairs(rpg_sources) do stop_rpg_sound(ent) end
+    end)
     hook.Add("EntityEmitSound", "seamless_portals_detour_sound", function(event)
         if SP.SuppressPortalMeleeSound and SP.SuppressPortalMeleeSound(event) then return false end
         local t=SP.NormalizeSoundEvent(event)
         if SP.IsNativeFireLoop and SP.IsNativeFireLoop(t) then return end
-        if not permitted(t) then return end
+        if not t or not permitted(t) then return end
+        local rpg = IsValid(t.Entity) and t.Entity:GetClass() == "rpg_missile" and rpg_flight_sound(t.SoundName)
+        if rpg and not rpg_sources[t.Entity] then
+            local count = 0 for _ in pairs(rpg_sources) do count = count+1 end
+            if count >= 64 then return end
+        end
         busy = true
         local ok, err = xpcall(function()
             local now = engine.TickCount()
@@ -82,6 +106,7 @@ if SERVER then
                 net.WriteUInt(t.Flags or 0,16)
                 net.WriteUInt(math.Clamp(t.DSP or 0,0,255),8)
                 net.Send(recipients)
+                if rpg then rpg_sources[t.Entity] = t.Entity:EntIndex() end
                 used = used+1
             end
         end, debug.traceback)
@@ -101,6 +126,12 @@ local function remove_emitter(key, record)
     if IsValid(record.entity) then record.entity:StopSound(record.name) record.entity:Remove() end
     emitters[key] = nil
 end
+function SP.StopPortalRPGSound(source)
+    for key, record in pairs(emitters) do
+        if record.source == source and rpg_flight_sound(record.name) then remove_emitter(key,record) end
+    end
+end
+net.Receive(rpg_stop_message,function() SP.StopPortalRPGSound(net.ReadUInt(16)) end)
 function SP.PlayPortalSound(path, source, t)
     if not enabled:GetBool() or not server_enabled:GetBool()
         or not SP.LinkAllows(path.entry,path.exit,"sound") then return end
@@ -130,7 +161,7 @@ function SP.PlayPortalSound(path, source, t)
         local entity = ClientsideModel("models/props_junk/PopCan01a.mdl",RENDERGROUP_OPAQUE)
         if not IsValid(entity) then return end
         entity:SetNoDraw(true) entity:DrawShadow(false)
-        record = {entity=entity,base=base,channel=channel,name=t.SoundName,entry=path.entry,exit=path.exit,expires=now+30}
+        record = {entity=entity,base=base,channel=channel,name=t.SoundName,source=source,entry=path.entry,exit=path.exit,expires=now+30}
         emitters[key] = record
     end
     record.entity:SetPos(path.pos)
@@ -161,7 +192,7 @@ hook.Add("EntityEmitSound","seamless_portals_detour_sound",function(event)
     if SP.SuppressPortalMeleeSound and SP.SuppressPortalMeleeSound(event) then return false end
     local t=SP.NormalizeSoundEvent(event)
     if SP.IsNativeFireLoop and SP.IsNativeFireLoop(t) then return end
-    if not enabled:GetBool() or not permitted(t) then return end
+    if not t or not enabled:GetBool() or not permitted(t) then return end
     local copy = {} for k,v in pairs(t) do copy[k]=v end copy.SeamlessRealm="client"
     for _, path in ipairs(SP.SoundPaths(t)) do
         copy.Volume=(t.Volume or 1)*(path.gain or 1)
